@@ -290,6 +290,7 @@ func os_beforeExit() {
 }
 
 // start forcegc helper goroutine
+// GC-后台触发：运行时会在应用程序启动时在后台开启一个用于强制触发垃圾收集的 Goroutine，该 Goroutine 的职责非常简单 — 调用 runtime.gcStart 尝试启动新一轮的垃圾收集
 func init() {
 	go forcegchelper()
 }
@@ -303,6 +304,8 @@ func forcegchelper() {
 			throw("forcegc: phase error")
 		}
 		atomic.Store(&forcegc.idle, 1)
+		// 为了减少对计算资源的占用，该 Goroutine 会在循环中调用 runtime.goparkunlock 主动陷入休眠等待其他 Goroutine 的唤醒，
+		// runtime.forcegchelper 在大多数时间都是陷入休眠的，但是它会被系统监控器 runtime.sysmon 在满足垃圾收集条件时唤醒
 		goparkunlock(&forcegc.lock, waitReasonForceGCIdle, traceEvGoBlock, 1)
 		// this goroutine is explicitly resumed by sysmon
 		if debug.gctrace > 0 {
@@ -1134,6 +1137,7 @@ func startTheWorldGC() {
 }
 
 // Holding worldsema grants an M the right to try to stop the world.
+// 全局的信号量，获取该信号量的线程有权利暂停当前应用程序
 var worldsema uint32 = 1
 
 // Holding gcsema grants the M the right to block a GC, and blocks
@@ -1166,6 +1170,7 @@ var gcsema uint32 = 1
 // startTheWorldWithSema and stopTheWorldWithSema.
 // Holding worldsema causes any other goroutines invoking
 // stopTheWorld to block.
+// GC暂停
 func stopTheWorldWithSema() {
 	_g_ := getg()
 
@@ -1175,6 +1180,11 @@ func stopTheWorldWithSema() {
 		throw("stopTheWorld: holding locks")
 	}
 
+	/**
+	暂停程序主要使用了 runtime.preemptall，该函数会调用 runtime.preemptone，因为程序中活跃的最大处理数为 gomaxprocs，
+	所以 runtime.stopTheWorldWithSema 在每次发现停止的处理器时都会对该变量减一，直到所有的处理器都停止运行。
+	该函数会依次停止当前处理器、等待处于系统调用的处理器以及获取并抢占空闲的处理器，处理器的状态在该函数返回时都会被更新至 _Pgcstop，等待垃圾收集器的重新唤醒
+	*/
 	lock(&sched.lock)
 	sched.stopwait = gomaxprocs
 	atomic.Store(&sched.gcwaiting, 1)
@@ -1244,6 +1254,13 @@ func stopTheWorldWithSema() {
 	worldStopped()
 }
 
+/**
+调用 runtime.netpoll 从网络轮询器中获取待处理的任务并加入全局队列；
+调用 runtime.procresize 扩容或者缩容全局的处理器；
+调用 runtime.notewakeup 或者 runtime.newm 依次唤醒处理器或者为处理器创建新的线程；
+如果当前待处理的 Goroutine 数量过多，创建额外的处理器辅助完成任务
+*/
+// GC恢复
 func startTheWorldWithSema(emitTraceEvent bool) int64 {
 	assertWorldStopped()
 
@@ -1263,6 +1280,7 @@ func startTheWorldWithSema(emitTraceEvent bool) int64 {
 	sched.gcwaiting = 0
 	if sched.sysmonwait != 0 {
 		sched.sysmonwait = 0
+		// 开始唤醒
 		notewakeup(&sched.sysmonnote)
 	}
 	unlock(&sched.lock)
@@ -1282,6 +1300,7 @@ func startTheWorldWithSema(emitTraceEvent bool) int64 {
 			notewakeup(&mp.park)
 		} else {
 			// Start M to run P.  Do not start another M below.
+			// 开始唤醒
 			newm(nil, p, -1)
 		}
 	}
@@ -2810,6 +2829,7 @@ top:
 	if gcBlackenEnabled != 0 && gcMarkWorkAvailable(_p_) {
 		node := (*gcBgMarkWorkerNode)(gcBgMarkWorkerPool.pop())
 		if node != nil {
+			// 当处理器没有可以执行的 Goroutine 时，它会运行垃圾收集的标记任务直到被抢占
 			_p_.gcMarkWorkerMode = gcMarkWorkerIdleMode
 			gp := node.gp.ptr()
 			casgstatus(gp, _Gwaiting, _Grunnable)
@@ -3295,16 +3315,29 @@ func injectglist(glist *gList) {
 	}
 }
 
+// schedule() 触发调度的机制
+// https://img.draveness.me/2020-02-05-15808864354679-schedule-points.png
+// 调度器调度循环纵览 https://golang.design/under-the-hood/assets/schedule.png
+// 运行时线程启动 runtime.mstart 和 Goroutine 执行结束 runtime.goexit0 触发调度
+// 主动挂起 — runtime.gopark -> runtime.park_m
+// 系统调用 — runtime.exitsyscall -> runtime.exitsyscall0，注意区分RawSyscall 和Syscall。所以只有可以立刻返回的系统调用才可能会被设置成 RawSyscall 类型，例如：SYS_EPOLL_CREATE、SYS_EPOLL_WAIT（超时时间为 0）、SYS_TIME 等。
+// 协作式调度 — runtime.Gosched -> runtime.gosched_m -> runtime.goschedImpl
+// 系统监控 — runtime.sysmon -> runtime.retake -> runtime.preemptone
+// goroutine 调度轮询 runtime.schedule->runtime.execute->runtime.gogo->runtime.exit->runtime.schedule
+// schedule()->execute()->gogo()->g2()->goexit()->goexit1()->mcall()->goexit0()->schedule() https://img2018.cnblogs.com/blog/1671650/201905/1671650-20190513152012618-1077293933.png
 // One round of scheduler: find a runnable goroutine and execute it.
 // Never returns.
 func schedule() {
+	// _g_ = 每个工作线程m对应的g0，初始化时是m0的g0
 	_g_ := getg()
 
 	if _g_.m.locks != 0 {
 		throw("schedule: holding locks")
 	}
-
+	// m.lockedg 会在 LockOSThread 下变为非零
 	if _g_.m.lockedg != 0 {
+		// 调度循环在发现当前的 m 存在请求锁住执行的 g 时，不会进入后续 g 的偷取过程， 相反会直接调用 stoplockedm，将当前的 m 和 p 解绑，并 park 当前的 m，
+		// 直到可以再次调度 lockedg 为止，获取 p 并通过 execute 直接调度 lockedg ， 从而再次进入调度循环：
 		stoplockedm()
 		execute(_g_.m.lockedg.ptr(), false) // Never returns.
 	}
@@ -3320,6 +3353,7 @@ top:
 	pp.preempt = false
 
 	if sched.gcwaiting != 0 {
+		// 如果需要 GC，不再进行调度
 		gcstopm()
 		goto top
 	}
@@ -3351,7 +3385,9 @@ top:
 			tryWakeP = true
 		}
 	}
+	// 正在 GC，去找 GC 的 g
 	if gp == nil && gcBlackenEnabled != 0 {
+		// 获取并执行用于后台标记的任务
 		gp = gcController.findRunnableGCWorker(_g_.m.p.ptr())
 		if gp != nil {
 			tryWakeP = true
@@ -3361,18 +3397,26 @@ top:
 		// Check the global runnable queue once in a while to ensure fairness.
 		// Otherwise two goroutines can completely occupy the local runqueue
 		// by constantly respawning each other.
+		// 每调度 61 次，就检查一次全局队列，保证公平性
+		// 否则两个 Goroutine 可以通过互相 respawn 一直占领本地的 runqueue,那么全局运行队列中的goroutine将得不到运行
 		if _g_.m.p.ptr().schedtick%61 == 0 && sched.runqsize > 0 {
+			//所有工作线程都能访问全局运行队列，所以需要加锁
 			lock(&sched.lock)
+			// 从全局队列中偷 g 1个
 			gp = globrunqget(_g_.m.p.ptr(), 1)
 			unlock(&sched.lock)
 		}
 	}
 	if gp == nil {
+		// 从处理器本地的运行队列中查找待执行的 Goroutine
 		gp, inheritTime = runqget(_g_.m.p.ptr())
 		// We can see gp != nil here even if the M is spinning,
 		// if checkTimers added a local goroutine via goready.
 	}
 	if gp == nil {
+		//如果从本地运行队列和全局运行队列都没有找到需要运行的goroutine，
+		//则调用findrunnable函数从其它工作线程的运行队列中偷取，如果偷取不到，则当前工作线程进入睡眠，
+		//直到获取到需要运行的goroutine之后findrunnable函数才会返回。
 		gp, inheritTime = findrunnable() // blocks until work is available
 	}
 
@@ -3380,6 +3424,9 @@ top:
 	// so if it was marked as spinning we need to reset it now and potentially
 	// start a new spinning M.
 	if _g_.m.spinning {
+		// 如果 m 是自旋状态，则
+		//   1. 从自旋到非自旋
+		//   2. 在没有自旋状态的 m 的情况下，再多创建一个新的自旋状态的 m
 		resetspinning()
 	}
 
@@ -3408,10 +3455,15 @@ top:
 	if gp.lockedm != 0 {
 		// Hands off own p to the locked m,
 		// then blocks waiting for a new p.
+		// 如果 g 需要 lock 到 m 上，则会将当前的 p
+		// 给这个要 lock 的 g
+		// 然后阻塞等待一个新的 p
 		startlockedm(gp)
 		goto top
 	}
-
+	// 找到了可执行的g，开始执行，它会通过 runtime.gogo 将 Goroutine 调度到当前线程上
+	// 当前运行的是runtime的代码，函数调用栈使用的是g0的栈空间
+	// 调用execte切换到gp的代码和栈空间去运行
 	execute(gp, inheritTime)
 }
 
@@ -3422,6 +3474,11 @@ top:
 // appropriate time. After calling dropg and arranging for gp to be
 // readied later, the caller can do other work but eventually should
 // call schedule to restart the scheduling of goroutines on this m.
+// dropg 移除 m 与当前 Goroutine m->curg（简称 gp ）之间的关联。
+// 通常，调用方将 gp 的状态设置为非 _Grunning 后立即调用 dropg 完成工作。
+// 调用方也有责任在 gp 将使用 ready 时重新启动时进行相关安排。
+// 在调用 dropg 并安排 gp ready 好后，调用者可以做其他工作，但最终应该
+// 调用 schedule 来重新启动此 m 上的 Goroutine 的调度。
 func dropg() {
 	_g_ := getg()
 
@@ -4909,9 +4966,20 @@ func (pp *p) destroy() {
 //
 // Returns list of Ps with local work, they need to be scheduled by the caller.
 func procresize(nprocs int32) *p {
+	// https://img2018.cnblogs.com/blog/1671650/201905/1671650-20190505151740171-1449618483.png
+	/**
+	使用make([]*p, nprocs)初始化全局变量allp，即allp = make([]*p, nprocs)
+
+	循环创建并初始化nprocs个p结构体对象并依次保存在allp切片之中
+
+	把m0和allp[0]绑定在一起，即m0.p = allp[0], allp[0].m = m0
+
+	把除了allp[0]之外的所有p放入到全局变量sched的pidle空闲队列之中
+	*/
 	assertLockHeld(&sched.lock)
 	assertWorldStopped()
 
+	// 系统初始化时 gomaxprocs = 0
 	old := gomaxprocs
 	if old < 0 || nprocs <= 0 {
 		throw("procresize: invalid arg")
@@ -4930,13 +4998,16 @@ func procresize(nprocs int32) *p {
 	maskWords := (nprocs + 31) / 32
 
 	// Grow allp if necessary.
+	// 初始化时 len(allp) == 0
 	if nprocs > int32(len(allp)) {
+		// 如果全局变量 allp 切片中的处理器数量少于期望数量，会对切片进行扩容
 		// Synchronize with retake, which could be running
 		// concurrently since it doesn't run on a P.
 		lock(&allpLock)
 		if nprocs <= int32(cap(allp)) {
 			allp = allp[:nprocs]
 		} else {
+			// 初始化时进入此分支，创建allp 切片
 			nallp := make([]*p, nprocs)
 			// Copy everything up to allp's cap so we
 			// never lose old allocated Ps.
@@ -4961,9 +5032,11 @@ func procresize(nprocs int32) *p {
 	}
 
 	// initialize new P's
+	// 使用 new 创建新的处理器结构体并调用 runtime.p.init 初始化刚刚扩容的处理器
 	for i := old; i < nprocs; i++ {
 		pp := allp[i]
 		if pp == nil {
+			// 调用内存分配器从堆上分配一个struct p
 			pp = new(p)
 		}
 		pp.init(i)
@@ -4972,15 +5045,20 @@ func procresize(nprocs int32) *p {
 
 	_g_ := getg()
 	if _g_.m.p != 0 && _g_.m.p.ptr().id < nprocs {
+		// 初始化时m0->p还未初始化，所以不会执行这个分支
 		// continue to use the current P
 		_g_.m.p.ptr().status = _Prunning
 		_g_.m.p.ptr().mcache.prepareForSweep()
 	} else {
+		// 初始化时执行这个分支
+		// 如果当前正在使用的 P 应该被释放，则更换为 allp[0]
+		// 否则是初始化阶段，没有 P 绑定当前 P allp[0]
 		// release the current P and acquire allp[0].
 		//
 		// We must do this before destroying our current P
 		// because p.destroy itself has write barriers, so we
 		// need to do that from a valid P.
+		// 释放当前 P，因为已失效
 		if _g_.m.p != 0 {
 			if trace.enabled {
 				// Pretend that we were descheduled
@@ -4992,10 +5070,13 @@ func procresize(nprocs int32) *p {
 			_g_.m.p.ptr().m = 0
 		}
 		_g_.m.p = 0
+		// 更换到 allp[0]
 		p := allp[0]
 		p.m = 0
 		p.status = _Pidle
+		// 直接将 allp[0] 绑定到当前的 M
 		acquirep(p)
+		// 到此m0, g0, 和m需要的p完全关联在一起了。
 		if trace.enabled {
 			traceGoStart()
 		}
@@ -5005,6 +5086,7 @@ func procresize(nprocs int32) *p {
 	mcache0 = nil
 
 	// release resources from unused P's
+	// 调用 runtime.p.destroy 释放不再使用的处理器结构
 	for i := nprocs; i < old; i++ {
 		p := allp[i]
 		p.destroy()
@@ -5012,6 +5094,7 @@ func procresize(nprocs int32) *p {
 	}
 
 	// Trim allp.
+	// 通过截断改变全局变量 allp 的长度保证与期望处理器数量相等
 	if int32(len(allp)) != nprocs {
 		lock(&allpLock)
 		allp = allp[:nprocs]
@@ -5020,24 +5103,34 @@ func procresize(nprocs int32) *p {
 		unlock(&allpLock)
 	}
 
+	// 将没有本地任务的 P 放到空闲链表中
 	var runnablePs *p
 	for i := nprocs - 1; i >= 0; i-- {
+		// 挨个检查 p
 		p := allp[i]
+		// 确保不是当前正在使用的 P
 		if _g_.m.p.ptr() == p {
+			//allp[0]跟m0关联了，所以是不能放任
 			continue
 		}
+		// 将 p 设为 idel
 		p.status = _Pidle
 		if runqempty(p) {
+			// 放入 idle 链表
 			pidleput(p)
 		} else {
 			p.m.set(mget())
+			// 第一个循环为 nil，后续则为上一个 p
+			// 此处即为构建可运行的 p 链表
 			p.link.set(runnablePs)
 			runnablePs = p
 		}
 	}
+	// 设置p的随机队列，不管nprocs是多少，这个算法都可以保证经过nprocs次循环，每个p都可以得到访问。
 	stealOrder.reset(uint32(nprocs))
 	var int32p *int32 = &gomaxprocs // make compiler check that gomaxprocs is an int32
 	atomic.Store((*uint32)(unsafe.Pointer(int32p)), uint32(nprocs))
+	// 返回所有包含本地任务的 P 链表
 	return runnablePs
 }
 
@@ -5082,6 +5175,7 @@ func wirep(_p_ *p) {
 		print("wirep: p->m=", _p_.m, "(", id, ") p->status=", _p_.status, "\n")
 		throw("wirep: invalid p state")
 	}
+	// 把p和m0关联起来，其实是这两个strct的成员相互赋值
 	_g_.m.p.set(_p_)
 	_p_.m.set(_g_.m)
 	_p_.status = _Prunning
@@ -5223,6 +5317,7 @@ func checkdead() {
 // is forced to run.
 //
 // This is a variable for testing purposes. It normally doesn't change.
+// 两分钟
 var forcegcperiod int64 = 2 * 60 * 1e9
 
 // needSysmonWorkaround is true if the workaround for
@@ -5369,6 +5464,7 @@ func sysmon() {
 			idle++
 		}
 		// check if we need to force a GC
+		// 系统监控在每个循环中都会主动构建一个 runtime.gcTrigger 并检查垃圾收集的触发条件是否满足，如果满足条件，系统监控会将 runtime.forcegc 状态中持有的 Goroutine 加入全局队列等待调度器的调度。
 		if t := (gcTrigger{kind: gcTriggerTime, now: now}); t.test() && atomic.Load(&forcegc.idle) != 0 {
 			lock(&forcegc.lock)
 			forcegc.idle = 0
@@ -5495,22 +5591,27 @@ func preemptall() bool {
 // Grunning
 func preemptone(_p_ *p) bool {
 	mp := _p_.m.ptr()
+	// 如果 p 是与当前的 m 绑定的，不抢占
 	if mp == nil || mp == getg().m {
 		return false
 	}
+	// 通过p找到正在执行的goroutine
 	gp := mp.curg
+	// 如果 m 正在执行 g0，不抢占
 	if gp == nil || gp == mp.g0 {
 		return false
 	}
-
+	// 设置抢占调度标记
 	gp.preempt = true
 
 	// Every call in a goroutine checks for stack overflow by
 	// comparing the current stack pointer to gp->stackguard0.
 	// Setting gp->stackguard0 to StackPreempt folds
 	// preemption into the normal stack overflow check.
+	// 在栈扩容的时候进行抢占
 	gp.stackguard0 = stackPreempt
-
+	// 所谓的抢占仅仅是给正在运行的goroutine设置一个标志而已，并没有使用什么有效的手段强制其停下来，
+	// 所以被请求的goroutine应该需要去检查preempt和stackguard0这两个标记。
 	// Request an async preemption of this P.
 	if preemptMSupported && debug.asyncpreemptoff == 0 {
 		_p_.preempt = true

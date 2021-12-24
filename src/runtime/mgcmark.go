@@ -429,6 +429,9 @@ retry:
 		debtBytes = int64(assistBytesPerWork * float64(scanWork))
 	}
 
+	// 每个 Goroutine 持有的 gcAssistBytes 表示当前协程辅助标记的字节数，
+	// 全局垃圾收集控制器持有的 bgScanCredit 表示后台协程辅助标记的字节数，
+	// 当本地 Goroutine 分配了较多对象时，可以使用公用的信用 bgScanCredit 偿还
 	// Steal as much credit as we can from the background GC's
 	// scan credit. This is racy and may drop the background
 	// credit below 0 if two mutators steal at the same time. This
@@ -466,6 +469,12 @@ retry:
 
 	// Perform assist work
 	systemstack(func() {
+		/**
+		该函数会先根据 Goroutine 的 gcAssistBytes 和垃圾收集控制器的配置计算需要完成的标记任务数量，
+		如果全局信用 bgScanCredit 中有可用的点数，那么会减去该点数，因为并发执行没有加锁，所以全局信用可能会被更新成负值，然而在长期来看这不是一个比较重要的问题。
+
+		如果全局信用不足以覆盖本地的债务，运行时会在系统栈中调用 runtime.gcAssistAlloc1 执行标记任务，它会直接调用 runtime.gcDrainN 完成指定数量的标记任务并返回
+		*/
 		gcAssistAlloc1(gp, scanWork)
 		// The user stack may have moved, so this can't touch
 		// anything on it until it returns from systemstack.
@@ -499,6 +508,11 @@ retry:
 		// there wasn't enough work to do anyway, so we might
 		// as well let background marking take care of the
 		// work that is available.
+		/**
+		如果在完成标记辅助任务后，当前 Goroutine 仍然入不敷出并且 Goroutine 没有被抢占，
+		那么运行时会执行 runtime.gcParkAssist；如果全局信用仍然不足，
+		运行时会通过 runtime.gcParkAssist 将当前 Goroutine 陷入休眠、加入全局的辅助标记队列并等待后台标记任务的唤醒
+		*/
 		if !gcParkAssist() {
 			goto retry
 		}
@@ -662,6 +676,8 @@ func gcFlushBgCredit(scanWork int64) {
 	scanBytes := int64(float64(scanWork) * assistBytesPerWork)
 
 	lock(&work.assistQueue.lock)
+	// 如果辅助队列中不存在等待的 Goroutine，那么当前的信用会直接加到全局信用 bgScanCredit 中
+	// https://img.draveness.me/2020-03-16-15843705141941-global-credit-and-assist-bytes.png
 	for !work.assistQueue.q.empty() && scanBytes > 0 {
 		gp := work.assistQueue.q.pop()
 		// Note that gp.gcAssistBytes is negative because gp
@@ -1011,7 +1027,10 @@ const (
 // gcDrain will always return if there is a pending STW.
 //
 //go:nowritebarrier
+// 用于扫描和标记堆内存中对象的核心方法,在调用 runtime.gcDrain 时，运行时会传入处理器上的 runtime.gcWork，这个结构体是垃圾收集器中工作池的抽象，它实现了一个生产者和消费者的模型
+// https://img.draveness.me/2020-03-16-15843705141923-gc-work-pool.png
 func gcDrain(gcw *gcWork, flags gcDrainFlags) {
+	// need writeBarrier
 	if !writeBarrier.needed {
 		throw("gcDrain phase incorrect")
 	}
@@ -1044,6 +1063,9 @@ func gcDrain(gcw *gcWork, flags gcDrainFlags) {
 			if job >= work.markrootJobs {
 				break
 			}
+			// root discovery
+			// 扫描根对象需要使用 runtime.markroot，该函数会扫描缓存、数据段、存放全局变量和静态变量的 BSS 段以及 Goroutine 的栈内存；
+			// 一旦完成了对根对象的扫描，当前 Goroutine 会开始从本地和全局的工作缓存池中获取待执行的任务
 			markroot(gcw, job, flushBgCredit)
 			if check != nil && check() {
 				goto done
@@ -1054,12 +1076,17 @@ func gcDrain(gcw *gcWork, flags gcDrainFlags) {
 	// Drain heap marking jobs.
 	// Stop if we're preemptible or if someone wants to STW.
 	for !(gp.preempt && (preemptible || atomic.Load(&sched.gcwaiting) != 0)) {
+		/**
+		为了减少锁竞争，运行时在每个处理器上会保存独立的待扫描工作，然而这会遇到与调度器一样的问题 — 不同处理器的资源不平均，
+		导致部分处理器无事可做，调度器引入了工作窃取来解决这个问题，垃圾收集器也使用了差不多的机制平衡不同处理器上的待处理任务
+		*/
 		// Try to keep work available on the global queue. We used to
 		// check if there were waiting workers, but it's better to
 		// just keep work available than to make workers wait. In the
 		// worst case, we'll do O(log(_WorkbufSize)) unnecessary
 		// balances.
 		if work.full == 0 {
+			// 将处理器本地一部分工作放回全局队列中，让其他的处理器处理，保证不同处理器负载的平衡。
 			gcw.balance()
 		}
 
@@ -1078,6 +1105,7 @@ func gcDrain(gcw *gcWork, flags gcDrainFlags) {
 			// Unable to get work.
 			break
 		}
+		// 扫描对象会使用 runtime.scanobject，该函数会从传入的位置开始扫描，扫描期间会调用 runtime.greyobject 为找到的活跃对象上色
 		scanobject(b, gcw)
 
 		// Flush background scan work credit to the global
@@ -1086,6 +1114,7 @@ func gcDrain(gcw *gcWork, flags gcDrainFlags) {
 		if gcw.heapScanWork >= gcCreditSlack {
 			gcController.heapScanWork.Add(gcw.heapScanWork)
 			if flushBgCredit {
+				// 还债,当本轮的扫描因为外部条件变化而中断时，该函数会通过 runtime.gcFlushBgCredit 记录这次扫描的内存字节数用于减少辅助标记的工作量
 				gcFlushBgCredit(gcw.heapScanWork - initScanWork)
 				initScanWork = 0
 			}
@@ -1541,6 +1570,7 @@ func gcDumpObject(label string, obj, off uintptr) {
 //
 //go:nowritebarrier
 //go:nosplit
+// 写屏障组成的混合写屏障在开启后，所有新创建的对象都需要被直接涂成黑色
 func gcmarknewobject(span *mspan, obj, size, scanSize uintptr) {
 	if useCheckmark { // The world should be stopped so this should not happen.
 		throw("gcmarknewobject called while doing checkmark")

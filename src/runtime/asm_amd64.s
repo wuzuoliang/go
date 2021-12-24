@@ -1617,7 +1617,7 @@ TEXT runtime·gcWriteBarrier<ABIInternal>(SB),NOSPLIT,$112
 	MOVQ	R12, (p_wbBuf+wbBuf_next)(R13)
 	CMPQ	R12, (p_wbBuf+wbBuf_end)(R13)
 	// Record the write.
-	MOVQ	AX, -16(R12)	// Record value
+	MOVQ	AX, -16(R12)	// Record value 记录值
 	// Note: This turns bad pointer writes into bad
 	// pointer reads, which could be confusing. We could avoid
 	// reading from obviously bad pointers, which would
@@ -1625,13 +1625,13 @@ TEXT runtime·gcWriteBarrier<ABIInternal>(SB),NOSPLIT,$112
 	// patch this up in the signal handler, or use XCHG to
 	// combine the read and the write.
 	MOVQ	(DI), R13
-	MOVQ	R13, -8(R12)	// Record *slot
+	MOVQ	R13, -8(R12)	// Record *slot 记录 *slot
 	// Is the buffer full? (flags set in CMPQ above)
 	JEQ	flush
 ret:
 	MOVQ	96(SP), R12
 	MOVQ	104(SP), R13
-	// Do the write.
+	// Do the write. 触发写操作
 	MOVQ	AX, (DI)
 	RET
 

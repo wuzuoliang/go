@@ -81,11 +81,13 @@ func init() {
 //
 // All fields of gcController are used only during a single mark
 // cycle.
+// 实现了垃圾收集的调步算法，它能够决定触发并行垃圾收集的时间和待处理的工作；
 var gcController gcControllerState
 
 type gcControllerState struct {
 
 	// Initialized from GOGC. GOGC=off means no GC.
+	// 触发垃圾收集的内存增长百分比，默认情况下为 100，即堆内存相比上次垃圾收集增长 100% 时应该触发 GC，并行的垃圾收集器会在到达该目标前完成垃圾收集
 	gcPercent atomic.Int32
 
 	_ uint32 // padding so following 64-bit values are 8-byte aligned
@@ -127,6 +129,7 @@ type gcControllerState struct {
 	// for the next cycle's trigger.
 	//
 	// Protected by mheap_.lock or a STW.
+	// 表示触发标记的堆内存大小的
 	trigger uint64
 
 	// consMark is the estimated per-CPU consMark ratio for the application.
@@ -190,6 +193,8 @@ type gcControllerState struct {
 	//
 	// Whenever this is updated, call traceHeapAlloc() and
 	// this gcControllerState's revise() method.
+	// 表示垃圾收集中存活对象字节数
+	// 为了减少锁竞争，运行时只会在中心缓存分配或者释放内存管理单元以及在堆上分配大对象时才会更新
 	heapLive uint64
 
 	// heapScan is the number of bytes of "scannable" heap. This
@@ -369,12 +374,14 @@ func (c *gcControllerState) init(gcPercent int32) {
 	}
 
 	// This will also compute and set the GC trigger and goal.
+	// 计算并重新设置GC trigger
 	c.setGCPercent(gcPercent)
 }
 
 // startCycle resets the GC controller's state and computes estimates
 // for a new GC cycle. The caller must hold worldsema and the world
 // must be stopped.
+// 会根据全局处理器的个数以及垃圾收集的 CPU 利用率计算出上述的 dedicatedMarkWorkersNeeded 和 fractionalUtilizationGoal 以决定不同模式的工作协程的数量
 func (c *gcControllerState) startCycle(markStartTime int64, procs int) {
 	c.heapScanWork.Store(0)
 	c.stackScanWork.Store(0)
@@ -835,10 +842,12 @@ func (c *gcControllerState) findRunnableGCWorker(_p_ *p) *g {
 			}
 		}
 	}
-
+	// 设置处理器的 gcMarkWorkerMode
+	// 控制器通过 dedicatedMarkWorkersNeeded 决定专门执行标记任务的 Goroutine 数量并根据执行标记任务的时间和总时间决定是否启动 gcMarkWorkerFractionalMode 模式的 Goroutine
 	if decIfPositive(&c.dedicatedMarkWorkersNeeded) {
 		// This P is now dedicated to marking until the end of
 		// the concurrent mark phase.
+		// 处理器专门负责标记对象，不会被调度器抢占
 		_p_.gcMarkWorkerMode = gcMarkWorkerDedicatedMode
 	} else if c.fractionalUtilizationGoal == 0 {
 		// No need for fractional workers.
@@ -856,6 +865,7 @@ func (c *gcControllerState) findRunnableGCWorker(_p_ *p) *g {
 			return nil
 		}
 		// Run a fractional worker.
+		// 当垃圾收集的后台 CPU 使用率达不到预期时（默认为 25%），启动该类型的工作协程帮助垃圾收集达到利用率的目标，因为它只占用同一个 CPU 的部分资源，所以可以被调度
 		_p_.gcMarkWorkerMode = gcMarkWorkerFractionalMode
 	}
 
@@ -952,6 +962,7 @@ func (c *gcControllerState) addGlobals(amount int64) {
 // gcController.heapLive. These must be up to date.
 //
 // mheap_.lock must be held or the world must be stopped.
+// 设置 gc_trigger，它能够决定触发垃圾收集的时间以及用户程序和后台处理的标记任务的多少，利用反馈控制的算法根据堆的增长情况和垃圾收集 CPU 利用率确定触发垃圾收集的时机
 func (c *gcControllerState) commit(triggerRatio float64) {
 	if !c.test {
 		assertWorldStoppedOrLockHeld(&mheap_.lock)

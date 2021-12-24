@@ -329,6 +329,7 @@ func (l *sweepLocker) tryAcquire(s *mspan) (sweepLocked, bool) {
 
 // sweepone sweeps some unswept heap span and returns the number of pages returned
 // to the heap, or ^uintptr(0) if there was nothing to sweep.
+// 在堆内存中查找待清理的内存管理单元
 func sweepone() uintptr {
 	gp := getg()
 
@@ -353,6 +354,9 @@ func sweepone() uintptr {
 			noMoreWork = sweep.active.markDrained()
 			break
 		}
+		//  查找内存管理单元时会通过 state 和 sweepgen 两个字段判断当前单元是否需要处理。
+		//  如果内存单元的 sweepgen 等于 mheap.sweepgen - 2，那么意味着当前单元需要清理，
+		//  如果等于 mheap.sweepgen - 1，那么当前管理单元就正在清理
 		if state := s.state.get(); state != mSpanInUse {
 			// This can happen if direct sweeping already
 			// swept this span, but in that case the sweep

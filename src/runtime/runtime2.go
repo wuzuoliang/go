@@ -494,6 +494,13 @@ type g struct {
 	// scan work. We track this in bytes to make it fast to update
 	// and check for debt in the malloc hot path. The assist ratio
 	// determines how this corresponds to scan work debt.
+	/**
+	标记辅助
+	为了保证用户程序分配内存的速度不会超出后台任务的标记速度，运行时还引入了标记辅助技术，
+	它遵循一条非常简单并且朴实的原则，分配多少内存就需要完成多少标记任务。
+	每一个 Goroutine 都持有 gcAssistBytes 字段，这个字段存储了当前 Goroutine 辅助标记的对象字节数。
+	在并发标记阶段期间，当 Goroutine 调用 runtime.mallocgc 分配新对象时，该函数会检查申请内存的 Goroutine 是否处于入不敷出的状态
+	*/
 	gcAssistBytes int64
 }
 
@@ -911,6 +918,7 @@ type lfnode struct {
 	pushcnt uintptr
 }
 
+// 强制GC状态
 type forcegcstate struct {
 	lock mutex
 	g    *g

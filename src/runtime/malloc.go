@@ -884,6 +884,7 @@ func (c *mcache) nextFree(spc spanClass) (v gclinkptr, s *mspan, shouldhelpgc bo
 			throw("s.allocCount != s.nelems && freeIndex == s.nelems")
 		}
 		c.refill(spc)
+		// 当前线程的内存管理单元中不存在空闲空间时，创建微对象和小对象需要调用 runtime.mcache.nextFree 从中心缓存或者页堆中获取新的管理单元，在这时就可能触发垃圾收集；
 		shouldhelpgc = true
 		s = c.alloc[spc]
 
@@ -906,6 +907,7 @@ func (c *mcache) nextFree(spc spanClass) (v gclinkptr, s *mspan, shouldhelpgc bo
 // Allocate an object of size bytes.
 // Small objects are allocated from the per-P cache's free lists.
 // Large objects (> 32 kB) are allocated straight from the heap.
+// GC-申请内存：三类对象的申请时机都会触发垃圾回收 shouldhelpgc
 func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	if gcphase == _GCmarktermination {
 		throw("mallocgc called with gcphase == _GCmarktermination")
@@ -953,6 +955,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 		}
 	}
 
+	// 分配多少内存就需要完成多少标记任务
 	// assistG is the G to charge for this allocation, or nil if
 	// GC is not currently active.
 	var assistG *g
@@ -970,8 +973,11 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 			// This G is in debt. Assist the GC to correct
 			// this before allocating. This must happen
 			// before disabling preemption.
+			// 借债
 			gcAssistAlloc(assistG)
 		}
+		// 申请内存时调用的 runtime.gcAssistAlloc 和扫描内存时调用的 runtime.gcFlushBgCredit 分别负责借债和还债，
+		// 通过这套债务管理系统，我们能够保证 Goroutine 在正常运行的同时不会为垃圾收集造成太多的压力，保证在达到堆大小目标时完成标记阶段
 	}
 
 	// Set mp.mallocing to keep from being preempted by GC.
@@ -1090,6 +1096,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 			}
 		}
 	} else {
+		// 当用户程序申请分配 32KB 以上的大对象时，一定会构建 runtime.gcTrigger 结构体尝试触发垃圾收集
 		shouldhelpgc = true
 		// For large allocations, keep track of zeroed state so that
 		// bulk zeroing can be happen later in a preemptible context.
@@ -1141,6 +1148,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	// This may be racing with GC so do it atomically if there can be
 	// a race marking the bit.
 	if gcphase != _GCoff {
+		// 在垃圾收集开始后调用该函数，获取对象对应的内存单元以及标记位 runtime.markBits 并调用 runtime.markBits.setMarked 直接将新的对象涂成黑色
 		gcmarknewobject(span, uintptr(x), size, scanSize)
 	}
 

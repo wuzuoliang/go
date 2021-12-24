@@ -53,6 +53,7 @@ func init() {
 // gcWork may locally hold GC work buffers. This can be done by
 // disabling preemption (systemstack or acquirem).
 type gcWork struct {
+	// 垃圾收集器提供了生产和消费任务的抽象，该结构体持有了两个重要的工作缓冲区 wbuf1 和 wbuf2，这两个缓冲区分别是主缓冲区和备缓冲区
 	// wbuf1 and wbuf2 are the primary and secondary work buffers.
 	//
 	// This can be thought of as a stack of both work buffers'
@@ -285,6 +286,8 @@ func (w *gcWork) dispose() {
 // global queue.
 //go:nowritebarrierrec
 func (w *gcWork) balance() {
+	// 当我们向该结构体中增加或者删除对象时，它总会先操作主缓冲区，
+	// 一旦主缓冲区空间不足或者没有对象，会触发主备缓冲区的切换；而当两个缓冲区空间都不足或者都为空时，会从全局的工作缓冲区中插入或者获取对象
 	if w.wbuf1 == nil {
 		return
 	}
