@@ -1454,6 +1454,7 @@ func (h *mheap) freeSpan(s *mspan) {
 //
 //go:systemstack
 func (h *mheap) freeManual(s *mspan, typ spanAllocType) {
+	// span 在下次被分配走时需要对该段内存进行清零
 	s.needzero = 1
 	lock(&h.lock)
 	h.freeSpanLocked(s, typ)
@@ -1476,6 +1477,7 @@ func (h *mheap) freeSpanLocked(s *mspan, typ spanAllocType) {
 		h.pagesInUse.Add(-int64(s.npages))
 
 		// Clear in-use bit in arena page bitmap.
+		// 清除 arena page bitmap 正在使用的二进制位
 		arena, pageIdx, pageMask := pageIndexOf(s.base())
 		atomic.And8(&arena.pageInUse[pageIdx], ^pageMask)
 	default:
@@ -1491,6 +1493,7 @@ func (h *mheap) freeSpanLocked(s *mspan, typ spanAllocType) {
 	}
 	if typ.manual() {
 		// Manually managed memory doesn't count toward heap_sys, so add it back.
+		// 记录并增加堆中的剩余空间
 		memstats.heap_sys.add(int64(nbytes))
 	}
 	// Update consistent stats.
@@ -1508,6 +1511,7 @@ func (h *mheap) freeSpanLocked(s *mspan, typ spanAllocType) {
 	memstats.heapStats.release()
 
 	// Mark the space as free.
+	// 将其释放会堆中
 	h.pages.free(s.base(), s.npages, false)
 
 	// Free the span structure. We no longer have a use for it.

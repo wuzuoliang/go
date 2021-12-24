@@ -211,6 +211,7 @@ func main() {
 		}
 	}()
 
+	// gc垃圾回收相关
 	gcenable()
 
 	main_init_done = make(chan bool)

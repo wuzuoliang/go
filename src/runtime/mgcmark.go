@@ -149,6 +149,15 @@ func gcMarkRootCheck() {
 // ptrmask for an allocation containing a single pointer.
 var oneptrmask = [...]uint8{1}
 
+/**
+什么是根对象：
+根对象在垃圾回收的术语中又叫做根集合，它是垃圾回收器在标记过程时最先检查的对象，包括：
+
+全局变量：程序在编译期就能确定的那些存在于程序整个生命周期的变量。
+执行栈：每个 goroutine 都包含自己的执行栈，这些执行栈上包含栈上的变量及指向分配的堆内存区块的指针。
+寄存器：寄存器的值可能表示一个指针，参与计算的这些指针可能指向某些赋值器分配的堆内存区块。
+*/
+
 // markroot scans the i'th root.
 //
 // Preemption must be disabled (because this uses a gcWork).

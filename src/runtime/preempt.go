@@ -339,6 +339,7 @@ func init() {
 
 // wantAsyncPreempt returns whether an asynchronous preemption is
 // queued for gp.
+// wantAsyncPreempt 返回异步抢占是否被 gp 请求
 func wantAsyncPreempt(gp *g) bool {
 	// Check both the G and the P.
 	return (gp.preempt || gp.m.p != 0 && gp.m.p.ptr().preempt) && readgstatus(gp)&^_Gscan == _Grunning

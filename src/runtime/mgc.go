@@ -600,6 +600,8 @@ func (t gcTrigger) test() bool {
 }
 
 /**
+Go的垃圾回收官方形容为 非分代 非紧缩 写屏障 并发标记清理。
+
 垃圾收集的多个阶段
 清理终止阶段；
 暂停程序，所有的处理器在这时会进入安全点（Safe point）；
@@ -979,6 +981,7 @@ top:
 
 // World must be stopped and mark assists and background workers must be
 // disabled.
+// 标记终止结束后，会进入 GCoff 阶段，并调用 gcSweep 来并发的使后台清扫器 Goroutine 与赋值器并发执行。
 func gcMarkTermination(nextTriggerRatio float64) {
 	// Start marktermination (write barrier remains enabled for now).
 	setGCPhase(_GCmarktermination)
@@ -1027,6 +1030,7 @@ func gcMarkTermination(nextTriggerRatio float64) {
 		}
 
 		// marking is complete so we can turn the write barrier off
+		// 标记阶段已经完成，关闭写屏障，开始并发清扫
 		setGCPhase(_GCoff)
 		gcSweep(work.mode)
 	})
@@ -1548,6 +1552,7 @@ func gcSweep(mode gcMode) {
 		throw("gcSweep being done but phase is not GCoff")
 	}
 
+	// 只需要将 mheap_ 相关的标志位清零，并唤醒后台清扫器 Goroutine 即可
 	lock(&mheap_.lock)
 	mheap_.sweepgen += 2
 	sweep.active.reset()
@@ -1582,6 +1587,7 @@ func gcSweep(mode gcMode) {
 	}
 
 	// Background sweep.
+	// 并发清扫（唤醒后台 Goroutine）
 	lock(&sweep.lock)
 	if sweep.parked {
 		sweep.parked = false

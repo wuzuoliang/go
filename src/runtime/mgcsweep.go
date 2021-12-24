@@ -33,11 +33,14 @@ var sweep sweepdata
 
 // State of background sweep.
 type sweepdata struct {
-	lock    mutex
-	g       *g
-	parked  bool
+	// mutex 保证清扫过程的原子性
+	lock mutex
+	// g 指针来保存所在的 Goroutine
+	g      *g
+	parked bool
+	// started 判断是否开始
 	started bool
-
+	// nbgsweep 和 npausesweep 来统计清扫过程
 	nbgsweep    uint32
 	npausesweep uint32
 
@@ -268,6 +271,7 @@ func finishsweep_m() {
 	nextMarkBitArenaEpoch()
 }
 
+// 当一个后台 sweeper 从应用程序启动时休眠后，再重新唤醒时，会进入如下循环，并一直在次循环中反复休眠与被唤醒：
 func bgsweep(c chan int) {
 	sweep.g = getg()
 
@@ -278,14 +282,18 @@ func bgsweep(c chan int) {
 	goparkunlock(&sweep.lock, waitReasonGCSweepWait, traceEvGoBlock, 1)
 
 	for {
+		// 清扫 span，如果清扫了一部分 span，则记录 bgsweep 的次数
 		for sweepone() != ^uintptr(0) {
 			sweep.nbgsweep++
 			Gosched()
 		}
+		// 可抢占的释放一些 workbufs 到堆中
 		for freeSomeWbufs(true) {
 			Gosched()
 		}
+		// 在 mheap_ 上判断是否完成清扫，若未完成，则继续进行清扫
 		lock(&sweep.lock)
+		// 即 mheap_.sweepdone != 0
 		if !isSweepDone() {
 			// This can happen if a GC runs between
 			// gosweepone returning ^0 above
@@ -293,6 +301,7 @@ func bgsweep(c chan int) {
 			unlock(&sweep.lock)
 			continue
 		}
+		// 否则让 Goroutine 进行 park
 		sweep.parked = true
 		goparkunlock(&sweep.lock, waitReasonGCSweepWait, traceEvGoBlock, 1)
 	}
@@ -335,10 +344,12 @@ func sweepone() uintptr {
 
 	// Increment locks to ensure that the goroutine is not preempted
 	// in the middle of sweep thus leaving the span in an inconsistent state for next GC
+	// 增加锁的数量确保 Goroutine 在 sweep 中不会被抢占，进而不会将 span 留到下个 GC 产生不一致
 	gp.m.locks++
 
 	// TODO(austin): sweepone is almost always called in a loop;
 	// lift the sweepLocker into its callers.
+	// 记录 sweeper 的数量
 	sl := sweep.active.begin()
 	if !sl.valid {
 		gp.m.locks--
@@ -371,11 +382,15 @@ func sweepone() uintptr {
 			// Sweep the span we found.
 			npages = s.npages
 			if s.sweep(false) {
+				// false 表示将其归还到 heap 中
+				// 整个 span 都已被释放，记录释放的额度，因为整个页都能用作 span 分配了
 				// Whole span was freed. Count it toward the
 				// page reclaimer credit since these pages can
 				// now be used for span allocation.
 				mheap_.reclaimCredit.Add(npages)
 			} else {
+				// span 还在被使用，因此返回零
+				// 并需要 span 移动到已经 sweep 的 in-use 列表中
 				// Span is still in-use, so this returned no
 				// pages to the heap and the span needs to
 				// move to the swept in-use list.
@@ -384,6 +399,7 @@ func sweepone() uintptr {
 			break
 		}
 	}
+	// 减少 sweeper 的数量并确保最后一个运行的 sweeper 正常标记了 mheap.sweepdone
 	sweep.active.end(sl)
 
 	if noMoreWork {

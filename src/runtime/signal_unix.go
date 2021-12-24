@@ -333,6 +333,7 @@ func doSigPreempt(gp *g, ctxt *sigctxt) {
 	// Check if this G wants to be preempted and is safe to
 	// preempt.
 	if wantAsyncPreempt(gp) {
+		// 异步抢占安全点分析
 		if ok, newpc := isAsyncSafePoint(gp, ctxt.sigpc(), ctxt.sigsp(), ctxt.siglr()); ok {
 			// Adjust the PC and inject a call to asyncPreempt.
 			ctxt.pushCall(abi.FuncPCABI0(asyncPreempt), newpc)
@@ -616,6 +617,7 @@ func sighandler(sig uint32, info *siginfo, ctxt unsafe.Pointer, gp *g) {
 		return
 	}
 
+	// 异步信号抢占
 	if sig == sigPreempt && debug.asyncpreemptoff == 0 {
 		// Might be a preemption signal.
 		doSigPreempt(gp, c)
