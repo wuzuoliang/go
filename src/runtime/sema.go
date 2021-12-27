@@ -46,6 +46,7 @@ type semaRoot struct {
 // Prime to not correlate with any user patterns.
 const semTabSize = 251
 
+// 信号量存储的semaRoot平衡树table
 var semtable [semTabSize]struct {
 	root semaRoot
 	pad  [cpu.CacheLinePadSize - unsafe.Sizeof(semaRoot{})]byte

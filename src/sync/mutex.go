@@ -23,8 +23,8 @@ func throw(string) // provided by runtime
 //
 // A Mutex must not be copied after first use.
 type Mutex struct {
-	state int32
-	sema  uint32
+	state int32  // 表示互斥锁的状态，比如是否被锁定等
+	sema  uint32 // 表示信号量，协程阻塞等待该信号量，解锁的协程释放信号量从而唤醒等待信号量的协程。
 }
 
 // A Locker represents an object that can be locked and unlocked.
@@ -34,10 +34,13 @@ type Locker interface {
 }
 
 const (
-	mutexLocked = 1 << iota // mutex is locked
-	mutexWoken
-	mutexStarving
-	mutexWaiterShift = iota
+	// https://blog.csdn.net/baolingye/article/details/111357407
+	// 协程之间抢锁实际上是抢给Locked赋值的权利，能给Locked域置1，就说明抢锁成功。抢不到的话就阻塞等待Mutex.sema信号量，一旦持有锁的协程解锁，等待的协程会依次被唤醒
+	// https://img-blog.csdnimg.cn/20201218131518552.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L2Jhb2xpbmd5ZQ==,size_16,color_FFFFFF,t_70
+	mutexLocked      = 1 << iota // mutex is locked 表示该Mutex是否已被锁定，0：没有锁定 1：已被锁定。
+	mutexWoken                   // 表示是否有协程已被唤醒，0：没有协程唤醒 1：已有协程唤醒，正在加锁过程中 Woken状态用于加锁和解锁过程的通信，举个例子，同一时刻，两个协程一个在加锁，一个在解锁，在加锁的协程可能在自旋过程中，此时把Woken标记为1，用于通知解锁协程不必释放信号量了，好比在说：你只管解锁好了，不必释放信号量，我马上就拿到锁了。
+	mutexStarving                // 表示该Mutex是否处理饥饿状态， 0：没有饥饿 1：饥饿状态，说明有协程阻塞了超过1ms
+	mutexWaiterShift = iota      // 表示阻塞等待锁的协程个数，协程解锁时根据此值来判断是否需要释放信号量。
 
 	// Mutex fairness.
 	//
@@ -49,21 +52,50 @@ const (
 	// waiter has good chances of losing. In such case it is queued at front
 	// of the wait queue. If a waiter fails to acquire the mutex for more than 1ms,
 	// it switches mutex to the starvation mode.
+	// 互斥锁可以有两种操作模式:正常和饥饿。在正常模式下，侍应按FIFO顺序排队，但被唤醒的侍应不拥有互斥锁，并与新到达的goroutines竞争其所有权。新到达的goroutines有一个优势——它们已经在CPU上运行，而且可能有很多，所以一个觉醒的服务员很有可能失败。在这种情况下，它被排在等待队列的前面。如果侍者在超过1ms的时间内没有获得互斥锁，它将互斥锁切换到饥饿模式。
 	//
 	// In starvation mode ownership of the mutex is directly handed off from
 	// the unlocking goroutine to the waiter at the front of the queue.
 	// New arriving goroutines don't try to acquire the mutex even if it appears
 	// to be unlocked, and don't try to spin. Instead they queue themselves at
 	// the tail of the wait queue.
+	// 在饥饿模式下，互斥锁的所有权直接从解锁程序转移到队列前面的侍者。新到达的goroutines不会试图获取互斥锁，即使它看起来是解锁的，也不要试图自旋。相反，他们把自己排在等待队列的末尾。
 	//
 	// If a waiter receives ownership of the mutex and sees that either
 	// (1) it is the last waiter in the queue, or (2) it waited for less than 1 ms,
 	// it switches mutex back to normal operation mode.
+	// 如果一个侍应生接收到互斥锁的所有权，并且看到(1)它是队列中的最后一个侍应生，或者(2)它等待时间小于1毫秒，它会将互斥锁切换回正常操作模式。
 	//
 	// Normal mode has considerably better performance as a goroutine can acquire
 	// a mutex several times in a row even if there are blocked waiters.
 	// Starvation mode is important to prevent pathological cases of tail latency.
+	// 普通模式的性能要好得多，因为goroutine可以连续多次获取互斥锁，即使存在阻塞的等待者。饥饿模式是重要的，以防止长尾延迟。
 	starvationThresholdNs = 1e6
+
+	// 自旋
+	// 加锁时，如果当前Locked位为1，说明该锁当前由其他协程持有，尝试加锁的协程并不是马上转入阻塞，而是会持续的探测Locked位是否变为0，这个过程即为自旋过程。
+	//
+	// 自旋时间很短，但如果在自旋过程中发现锁已被释放，那么协程可以立即获取锁。此时即便有协程被唤醒也无法获取锁，只能再次阻塞。
+	//
+	// 自旋的好处是，当加锁失败时不必立即转入阻塞，有一定机会获取到锁，这样可以避免协程的切换的开销
+	// 4.1 自旋条件
+	//加锁时程序会自动判断是否可以自旋，无限制的自旋将会给CPU带来巨大压力，所以判断是否可以自旋就很重要了。
+	//
+	//自旋必须满足以下所有条件：
+	//
+	//自旋次数要足够小，通常为4，即自旋最多4次
+	//CPU核数要大于1，否则自旋没有意义，因为此时不可能有其他协程释放锁
+	//协程调度机制中的Process数量要大于1，比如使用GOMAXPROCS()将处理器设置为1就不能启用自旋
+	//协程调度机制中的可运行队列必须为空，否则会延迟协程调度
+	//可见，自旋的条件是很苛刻的，总而言之就是不忙的时候才会启用自旋。
+	//
+	// 4.2 自旋的优势
+	//自旋的优势是更充分的利用CPU，尽量避免协程切换。因为当前申请加锁的协程拥有CPU，如果经过短时间的自旋可以获得锁，当前协程可以继续运行，不必进入阻塞状态。
+	//
+	// 4.3 自旋的问题
+	//如果自旋过程中获得锁，那么之前被阻塞的协程将无法获得锁，如果加锁的协程特别多，每次都通过自旋获得锁，那么之前被阻塞的进程将很难获得锁，从而进入饥饿状态。
+	//
+	//为了避免协程长时间无法获取锁，自1.8版本以来增加了一个状态，即Mutex的Starving状态。这个状态下不会自旋，一旦有协程释放锁，那么一定会唤醒一个协程并成功加锁。
 )
 
 // Lock locks m.
@@ -114,12 +146,14 @@ func (m *Mutex) lockSlow() {
 	for {
 		// Don't spin in starvation mode, ownership is handed off to waiters
 		// so we won't be able to acquire the mutex anyway.
+		// 已加锁，且非饥饿状态，可自旋
 		if old&(mutexLocked|mutexStarving) == mutexLocked && runtime_canSpin(iter) {
 			// Active spinning makes sense.
 			// Try to set mutexWoken flag to inform Unlock
 			// to not wake other blocked goroutines.
 			if !awoke && old&mutexWoken == 0 && old>>mutexWaiterShift != 0 &&
 				atomic.CompareAndSwapInt32(&m.state, old, old|mutexWoken) {
+				// 告诉其他协程已经有一个锁在自旋且唤醒了，解锁的不需要再发信号量了
 				awoke = true
 			}
 			runtime_doSpin()
@@ -159,6 +193,7 @@ func (m *Mutex) lockSlow() {
 			if waitStartTime == 0 {
 				waitStartTime = runtime_nanotime()
 			}
+			// 等待锁被释放，信号量唤起
 			runtime_SemacquireMutex(&m.sema, queueLifo, 1)
 			starving = starving || runtime_nanotime()-waitStartTime > starvationThresholdNs
 			old = m.state
@@ -167,6 +202,8 @@ func (m *Mutex) lockSlow() {
 				// ownership was handed off to us but mutex is in somewhat
 				// inconsistent state: mutexLocked is not set and we are still
 				// accounted as waiter. Fix that.
+				// 如果这个goroutine被唤醒，互斥体处于饥饿模式，所有权被移交给我们，
+				// 但互斥体处于不一致的状态:mutexLocked没有设置，我们仍然被视为等待。解决这个问题。
 				if old&(mutexLocked|mutexWoken) != 0 || old>>mutexWaiterShift == 0 {
 					throw("sync: inconsistent mutex state")
 				}
@@ -177,6 +214,8 @@ func (m *Mutex) lockSlow() {
 					// Starvation mode is so inefficient, that two goroutines
 					// can go lock-step infinitely once they switch mutex
 					// to starvation mode.
+					// 退出饥饿模式。关键是在这里做，并考虑等待时间。
+					// 饥饿模式的效率非常低，以至于两个gorout例程一旦将互斥锁切换到饥饿模式，就可以无限地执行锁步。
 					delta -= mutexStarving
 				}
 				atomic.AddInt32(&m.state, delta)
