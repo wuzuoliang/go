@@ -321,6 +321,15 @@ func getclosureptr() uintptr
 //go:noescape
 func asmcgocall(fn, arg unsafe.Pointer) int32
 
+/**
+栈增长
+栈内存初始分配发生在goroutine创建时，由于初始栈大小都是2KB，在实际业务中可能会不够用，所以需要实现一种在运行阶段动态增长栈的机制。
+goroutine的栈增长，是通过编译器和runtime合作实现的，编译器会在函数的头部安插检测代码，检查当前剩余的栈空间是否够用。
+闭包函数内部如果需要栈增长的话，会直接调用runtime.morestack()，而一般的函数会调用runtime.morestack_noctxt()，它会先显式的将DX寄存器清零，然后调用morestack()。
+
+morestack()也是一个用汇编语言实现的函数，它会先进行一些检查工作，因为不能增长g0和gsignal的栈，然后它会把调用者的PC、SP等存入g.sched中，然后调用newstack()来增长栈。
+https://mmbiz.qpic.cn/mmbiz_jpg/ibjI8pEWI9L5ib2ibkVjf5Uib9x2Ox89jLSVqW3TQbUPJnmhU2dR6hFldw7zWhDZicg4hy3ZT6BibMuIRVEFH7Qzw2iaA/640?wx_fmt=jpeg&tp=webp&wxfrom=5&wx_lazy=1&wx_co=1
+ */
 func morestack()
 func morestack_noctxt()
 func rt0_go()

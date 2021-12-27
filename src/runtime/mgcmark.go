@@ -739,7 +739,10 @@ func gcFlushBgCredit(scanWork int64) {
 //
 // scanstack is marked go:systemstack because it must not be preempted
 // while using a workbuf.
-//
+// 栈收缩
+// 唯一发起栈收缩的地方就是 GC。GC通过scanstack函数寻找标记root节点时，如果发现可以安全的收缩栈，就会执行栈收缩，
+// 不能马上执行时，就设置栈收缩标识（g.preemptShrink = true），等到协程检测到抢占标识（stackPreempt）。
+// 在让出CPU之前会检查这个栈收缩标识，为true的话就会先进行栈收缩，再让出CPU。
 //go:nowritebarrier
 //go:systemstack
 func scanstack(gp *g, gcw *gcWork) int64 {
