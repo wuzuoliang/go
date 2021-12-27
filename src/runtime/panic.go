@@ -405,13 +405,15 @@ func freedeferfn() {
 // deferreturn runs deferred functions for the caller's frame.
 // The compiler inserts a call to this at the end of any
 // function which calls defer.
+// defer的调用过程是一个出栈的过程
 func deferreturn() {
-	gp := getg()
+	gp := getg() // 获得当前的goroutine
 	for {
 		d := gp._defer
 		if d == nil {
 			return
 		}
+		//获取调用deferreturn时的栈顶位置
 		sp := getcallersp()
 		if d.sp != sp {
 			return
@@ -429,10 +431,10 @@ func deferreturn() {
 			return
 		}
 
-		fn := d.fn
-		d.fn = nil
-		gp._defer = d.link
-		freedefer(d)
+		fn := d.fn         // 获得defer的func函数
+		d.fn = nil         // 重置
+		gp._defer = d.link // 将前一个defer函数attach到当前goroutine
+		freedefer(d)       // 释放defer函数
 		fn()
 	}
 }

@@ -134,6 +134,8 @@ import (
 	"unsafe"
 )
 
+// 粗线条话GC https://zhuanlan.zhihu.com/p/338203758
+
 const (
 	_DebugGC         = 0
 	_ConcurrentSweep = true
@@ -228,6 +230,27 @@ func setGCPhase(x uint32) {
 type gcMarkWorkerMode int
 
 const (
+	/**
+	如何控制GC的CPU使用率?
+	GC默认的CPU目标使用率为25%，在GC执行的初始化阶段，会根据当前CPU核数乘以CPU目标使用率来计算需要启动的mark worker数量。
+	为了应对计算结果不为整数的情况，会对该结果进行rounding（+0.5）。但是又怕这样的rounding会和目标使用率出现显著偏差，所以在mark worker中引入了不同的工作模式:
+
+	(1)Dedicated模式的worker会执行标记任务直到被抢占；
+
+	(2)Fractional模式的worker除了被抢占外，还可以在达到Fractional部分的目标使用率时主动让出。
+
+	例如，如果有四个核，4*25%=1，只需要启动一个Dedicated模式的worker。
+
+	如果有六个核，6*25%=1.5，rounding以后等于2，误差=2/1.5-1=1/3，误差超过0.3，所以Dedicated模式的worker要是有2个就显著超出目标使用率了，只能启用一个Dedicated模式的worker，再启用一个Fractional模式的worker来辅助完成额外的目标。
+
+	gcController中会记录可以启动的Dedicated模式的worker数量，还会记录Fractional模式的worker需要完成的使用率目标（fractionalUtilizationGoal ）。例如上面六核的情况下，fractionalUtilizationGoal=(1.5-1)/6。
+
+	调度器执行findRunnableGcWorker恢复mark worker时，需要设置worker运行的模式：1）如果Dedicated模式的worker数目还没有达到上限，就设置为Dedicated模式；2）否则，就要看是否需要Fractional模式的worker辅助工作，需要的话就设置为Fractional模式。
+
+	P会记录自己执行Fractional模式的worker的时间，如果当前P累计执行Fractional模式的时间与本轮标记工作已经执行的时间的比率达到fractionalUtilizationGoal，Fractional模式的worker就可以主动让出了。
+
+	通过上面的方式，可以有效的控制GC的CPU使用率。
+	*/
 	// gcMarkWorkerNotWorker indicates that the next scheduled G is not
 	// starting work and the mode should be ignored.
 	gcMarkWorkerNotWorker gcMarkWorkerMode = iota
@@ -516,10 +539,11 @@ func gcWaitOnMark(n uint32) {
 // gcMode indicates how concurrent a GC cycle should be.
 type gcMode int
 
+// 三种GC模式
 const (
-	gcBackgroundMode gcMode = iota // concurrent GC and sweep
-	gcForceMode                    // stop-the-world GC now, concurrent sweep
-	gcForceBlockMode               // stop-the-world GC now and STW sweep (forced by user)
+	gcBackgroundMode gcMode = iota // concurrent GC and sweep 默认模式，标记与清扫过程都是并发执行的
+	gcForceMode                    // stop-the-world GC now, concurrent sweep 只在清扫阶段支持并发
+	gcForceBlockMode               // stop-the-world GC now and STW sweep (forced by user) GC全程需要STW
 )
 
 // A gcTrigger is a predicate for starting a GC cycle. Specifically,
@@ -601,6 +625,7 @@ func (t gcTrigger) test() bool {
 
 /**
 Go的垃圾回收官方形容为 非分代 非紧缩 写屏障 并发标记清理。
+【漫话GC】我是GC Mark Worker~ https://zhuanlan.zhihu.com/p/430419964
 
 垃圾收集的多个阶段
 清理终止阶段；
@@ -676,7 +701,7 @@ func gcStart(trigger gcTrigger) {
 
 	// In gcstoptheworld debug mode, upgrade the mode accordingly.
 	// We do this after re-checking the transition condition so
-	// that multiple goroutines that detect the heap trigger don't
+	// that multiple goroutines、that detect the heap trigger don't
 	// start multiple STW GCs.s
 	mode := gcBackgroundMode
 	if debug.gcstoptheworld == 1 {
@@ -704,6 +729,7 @@ func gcStart(trigger gcTrigger) {
 	}
 
 	// 后台标记线程
+	// 为每个P创建一个mark worker协程，这些后台mark worker创建后很快陷入休眠，等待到标记阶段得到调度（findRunnableGCWorker）
 	gcBgMarkStartWorkers()
 
 	systemstack(gcResetMarkState)
@@ -727,6 +753,7 @@ func gcStart(trigger gcTrigger) {
 	}
 	systemstack(stopTheWorldWithSema)
 	// Finish sweep before we start concurrent scan.
+	// 完成上一轮GC未完成的清扫工作
 	systemstack(func() {
 		finishsweep_m()
 	})
@@ -739,6 +766,7 @@ func gcStart(trigger gcTrigger) {
 
 	// Assists and workers can start the moment we start
 	// the world.
+	// 开启写屏障，开启新一轮GC
 	gcController.startCycle(now, int(gomaxprocs))
 	work.heapGoal = gcController.heapGoal
 
@@ -763,6 +791,7 @@ func gcStart(trigger gcTrigger) {
 	// allocations are blocked until assists can
 	// happen, we want enable assists as early as
 	// possible.
+	// gcphase置为_GCMark
 	setGCPhase(_GCmark)
 
 	// 初始化后台扫描需要的状态
@@ -984,6 +1013,8 @@ top:
 // 标记终止结束后，会进入 GCoff 阶段，并调用 gcSweep 来并发的使后台清扫器 Goroutine 与赋值器并发执行。
 func gcMarkTermination(nextTriggerRatio float64) {
 	// Start marktermination (write barrier remains enabled for now).
+	// gcphase置为_GCMarkTermination
+	// 确认标记工作已完成，停止后台mark worker和assist worker
 	setGCPhase(_GCmarktermination)
 
 	work.heap1 = gcController.heapLive
@@ -1290,6 +1321,7 @@ func gcBgMarkWorker() {
 	// latency between _GCmark starting and the workers starting.
 
 	for {
+		// https://pic1.zhimg.com/v2-c14a9c99f085b1d2b8b8a12efcb81858_b.gif
 		// 获取当前处理器以及 Goroutine 打包成runtime.gcBgMarkWorkerNode 类型的结构并主动陷入休眠等待唤醒
 		// Go to sleep until woken by
 		// gcController.findRunnableGCWorker.

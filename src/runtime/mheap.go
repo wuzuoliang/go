@@ -65,7 +65,7 @@ type mheap struct {
 	lock  mutex
 	pages pageAlloc // page allocation data structure
 
-	sweepgen uint32 // sweep generation, see comment in mspan; written during STW
+	sweepgen uint32 // sweep generation, see comment in mspan; written during STW  written during STW 清扫生成
 
 	// allspans is a slice of all mspans ever created. Each mspan
 	// appears exactly once.
@@ -78,7 +78,7 @@ type mheap struct {
 	// store. Accesses during STW might not hold the lock, but
 	// must ensure that allocation cannot happen around the
 	// access (since that may free the backing store).
-	allspans []*mspan // all spans out there
+	allspans []*mspan // all spans out there 所有的 spans 都是通过 mheap_ 申请，所有申请过的 mspan 都会记录在 allspans。结构体中的 lock 就是用来保证并发安全的
 
 	// _ uint32 // align uint64 fields on 32-bit for atomics
 
@@ -100,11 +100,11 @@ type mheap struct {
 	// accounting for current progress. If we could only adjust
 	// the slope, it would create a discontinuity in debt if any
 	// progress has already been made.
-	pagesInUse         atomic.Uint64 // pages of spans in stats mSpanInUse
-	pagesSwept         atomic.Uint64 // pages swept this cycle
-	pagesSweptBasis    atomic.Uint64 // pagesSwept to use as the origin of the sweep ratio
-	sweepHeapLiveBasis uint64        // value of gcController.heapLive to use as the origin of sweep ratio; written with lock, read without
-	sweepPagesPerByte  float64       // proportional sweep ratio; written with lock, read without
+	pagesInUse         atomic.Uint64 // pages of spans in stats mSpanInUse  updated atomically 统计mSpanInUse 中spans的页数
+	pagesSwept         atomic.Uint64 // pages swept this cycle updated atomically 本轮清扫的页数
+	pagesSweptBasis    atomic.Uint64 // pagesSwept to use as the origin of the sweep ratio updated atomically 用作清扫率`
+	sweepHeapLiveBasis uint64        // value of gcController.heapLive to use as the origin of sweep ratio; written with lock, read without 用作扫描率的heap_live 值
+	sweepPagesPerByte  float64       // proportional sweep ratio; written with lock, read without   清扫率
 	// TODO(austin): pagesInUse should be a uintptr, but the 386
 	// compiler can't 8-byte align fields.
 
@@ -113,7 +113,7 @@ type mheap struct {
 	// to the OS.
 	//
 	// Accessed atomically.
-	scavengeGoal uint64
+	scavengeGoal uint64 // 保留的堆内存总量（预先设定的），runtime 将试图返还内存给OS
 
 	// Page reclaimer state
 
@@ -123,13 +123,13 @@ type mheap struct {
 	//
 	// If this is >= 1<<63, the page reclaimer is done scanning
 	// the page marks.
-	reclaimIndex atomic.Uint64
+	reclaimIndex atomic.Uint64 // 指回收的下一页在allAreans 中的索引。具体来说，它指的是 arena allArenas[i/pagesPerArena] 的第（i%pagesPerArena）页
 
 	// reclaimCredit is spare credit for extra pages swept. Since
 	// the page reclaimer works in large chunks, it may reclaim
 	// more than requested. Any spare pages released go to this
 	// credit pool.
-	reclaimCredit atomic.Uintptr
+	reclaimCredit atomic.Uintptr // 多余页面的备用信用。因为页回收器工作在大块中，它可能回收的比请求的要多，释放的任何备用页将转到此信用池
 
 	// arenas is the heap arena map. It points to the metadata for
 	// the heap for every arena frame of the entire usable virtual
@@ -151,18 +151,19 @@ type mheap struct {
 	// platforms (even 64-bit), arenaL1Bits is 0, making this
 	// effectively a single-level map. In this case, arenas[0]
 	// will never be nil.
+	// 管理堆区内存区域的 arenas
 	arenas [1 << arenaL1Bits]*[1 << arenaL2Bits]*heapArena
 
 	// heapArenaAlloc is pre-reserved space for allocating heapArena
 	// objects. This is only used on 32-bit, where we pre-reserve
 	// this space to avoid interleaving it with the heap itself.
-	heapArenaAlloc linearAlloc
+	heapArenaAlloc linearAlloc // 是为分配heapArena对象而预先保留的空间。仅仅用于32位系统。
 
 	// arenaHints is a list of addresses at which to attempt to
 	// add more heap arenas. This is initially populated with a
 	// set of general hint addresses, and grown with the bounds of
 	// actual heap arena ranges.
-	arenaHints *arenaHint
+	arenaHints *arenaHint // 试图添加更多堆 arenas 的地址列表。它最初由一组通用少许地址填充，并随实 heap arena 的界限而增长
 
 	// arena is a pre-reserved space for allocating heap arenas
 	// (the actual arenas). This is only used on 32-bit.
@@ -175,22 +176,22 @@ type mheap struct {
 	// append-only and old backing arrays are never freed, it is
 	// safe to acquire mheap_.lock, copy the slice header, and
 	// then release mheap_.lock.
-	allArenas []arenaIdx
+	allArenas []arenaIdx // 是每个映射arena的arenaIndex 索引。可以用以遍历地址空间。
 
 	// sweepArenas is a snapshot of allArenas taken at the
 	// beginning of the sweep cycle. This can be read safely by
 	// simply blocking GC (by disabling preemption).
-	sweepArenas []arenaIdx
+	sweepArenas []arenaIdx // 指在清扫周期开始时保留的 allArenas 快照
 
 	// markArenas is a snapshot of allArenas taken at the beginning
 	// of the mark cycle. Because allArenas is append-only, neither
 	// this slice nor its contents will change during the mark, so
 	// it can be read safely.
-	markArenas []arenaIdx
+	markArenas []arenaIdx //  指在标记周期开始时保留的 allArenas 快照
 
 	// curArena is the arena that the heap is currently growing
 	// into. This should always be physPageSize-aligned.
-	curArena struct {
+	curArena struct { // 指heap当前增长时的 arena，它总是与physPageSize对齐。
 		base, end uintptr
 	}
 
@@ -201,7 +202,8 @@ type mheap struct {
 	// spaced CacheLinePadSize bytes apart, so that each mcentral.lock
 	// gets its own cache line.
 	// central is indexed by spanClass.
-	central [numSpanClasses]struct {
+	// 页堆中包含一个长度为 136 的 runtime.mcentral 数组，其中 68 个为跨度类需要 scan 的中心缓存，另外的 68 个是 noscan 的中心缓存
+	central [numSpanClasses]struct { //  mcentral ，每种规格大小的块对应一个 mcentral。pad 是一个字节填充，用来避免伪共享（false sharing）
 		mcentral mcentral
 		pad      [cpu.CacheLinePadSize - unsafe.Sizeof(mcentral{})%cpu.CacheLinePadSize]byte
 	}
@@ -224,6 +226,7 @@ var mheap_ mheap
 //
 //go:notinheap
 type heapArena struct {
+	// heapArena中arena区域是真正的堆区，所有分配的span都是从这个地方分配。arena区域管理的单元大小是page，page页数为pagesPerArena
 	// bitmap stores the pointer/scalar bitmap for the words in
 	// this arena. See mbitmap.go for a description. Use the
 	// heapBits type to access this.
@@ -240,6 +243,7 @@ type heapArena struct {
 	// known to contain in-use or stack spans. This means there
 	// must not be a safe-point between establishing that an
 	// address is live and looking it up in the spans array.
+	// 是个*mspan类型的数组，大小为8192，正好对应arena中8192个page，所以用于定位一个page对应的mspan在哪儿
 	spans [pagesPerArena]*mspan
 
 	// pageInUse is a bitmap that indicates which spans are in
@@ -248,6 +252,8 @@ type heapArena struct {
 	// span is used.
 	//
 	// Reads and writes are atomic.
+	// uint8类型的数组，长度为1024，所以一共8192位。结合这个名字，看起来似乎是标记哪些页面被使用了。
+	// 但实际上，这个位图只标记处于使用状态(mSpanInUse)的span的第一个page
 	pageInUse [pagesPerArena / 8]uint8
 
 	// pageMarks is a bitmap that indicates which spans have any
@@ -263,6 +269,7 @@ type heapArena struct {
 	// TODO(austin): It would be nice if this was uint64 for
 	// faster scanning, but we don't have 64-bit atomic bit
 	// operations.
+	// 这个位图看起来应该和GC标记有点儿关系，它的用法和pageInUse一样，只标记每个span的第一个page。在GC标记阶段会修改这个位图，标记哪些span中存在被标记的对象;在GC清扫阶段会根据这个位图，来释放不含标记对象的span。
 	pageMarks [pagesPerArena / 8]uint8
 
 	// pageSpecials is a bitmap that indicates which spans have
@@ -294,7 +301,7 @@ type heapArena struct {
 
 // arenaHint is a hint for where to grow the heap arenas. See
 // mheap_.arenaHints.
-//
+// 保存了 arena 的起始地址、是否为最后一个 arena，以及下一个 arenaHint 指针
 //go:notinheap
 type arenaHint struct {
 	addr uintptr
@@ -347,6 +354,14 @@ const (
 
 // mSpanStateNames are the names of the span states, indexed by
 // mSpanState.
+/**
+该状态可能处于 mSpanDead、mSpanInUse、mSpanManual 和 mSpanFree 四种情况。
+当 runtime.mspan 在空闲堆中，它会处于 mSpanFree 状态；当 runtime.mspan 已经被分配时，它会处于 mSpanInUse、mSpanManual 状态，运行时会遵循下面的规则转换该状态：
+在垃圾回收的任意阶段，可能从 mSpanFree 转换到 mSpanInUse 和 mSpanManual；
+在垃圾回收的清除阶段，可能从 mSpanInUse 和 mSpanManual 转换到 mSpanFree；
+在垃圾回收的标记阶段，不能从 mSpanInUse 和 mSpanManual 转换到 mSpanFree；
+设置 runtime.mspan 状态的操作必须是原子性的以避免垃圾回收造成的线程竞争问题。
+*/
 var mSpanStateNames = []string{
 	"mSpanDead",
 	"mSpanInUse",
@@ -384,7 +399,7 @@ type mspan struct {
 	list *mSpanList // For debugging. TODO: Remove.
 
 	startAddr uintptr // address of first byte of span aka s.base()
-	npages    uintptr // number of pages in span
+	npages    uintptr // number of pages in span 管理 npages 个大小为 8KB 的页，这里的页不是操作系统中的内存页，它们是操作系统内存页的整数倍
 
 	manualFreeList gclinkptr // list of free objects in mSpanManual spans
 
@@ -403,18 +418,24 @@ type mspan struct {
 	// undefined and should never be referenced.
 	//
 	// Object n starts at address n*elemsize + (start << pageShift).
+	// 标记0~nelems之间的插槽索引，标记的的是在span中的下一个空闲对象
 	freeindex uintptr
 	// TODO: Look up nelems from sizeclass and remove this field if it
 	// helps performance.
-	nelems uintptr // number of object in the span.
+	nelems uintptr // number of object in the span. span中对象数（page是内存存储的基本单元, 一个span由多个page组成，同时一个对象可能占用一个或多个page)
 
+	// 在mspan里面有个allocBits，allocBits的每一位二进制对应一个object,0表示该object已被使用，1表示该object未被使用。allocCache作为allocBits的缓存，提交检索效率。
 	// Cache of the allocBits at freeindex. allocCache is shifted
 	// such that the lowest bit corresponds to the bit freeindex.
 	// allocCache holds the complement of allocBits, thus allowing
 	// ctz (count trailing zero) to use it directly.
 	// allocCache may contain bits beyond s.nelems; the caller must ignore
 	// these.
-	allocCache uint64
+	// freeindex的allolocbits的缓存。将allocCache进行移位，使其最低位对应于位空闲索引。
+	// allocCache保存了allocBits的补码，因此允许ctz(计数末尾为0)直接使用它。
+	// allocCache可能包含s.nelems以外的位;调用者必须忽略这些。
+	// span.allocCache为一个64位的数值，每一个bit表示该对象块是否空闲
+	allocCache uint64 // 在 freeindex 位置的 allocBits 缓存,相当于一个滑动窗口的模式，每次都是从freeindex开始计算
 
 	// allocBits and gcmarkBits hold pointers to a span's mark and
 	// allocation bits. The pointers are 8 byte aligned.
@@ -438,8 +459,9 @@ type mspan struct {
 	// The sweep will free the old allocBits and set allocBits to the
 	// gcmarkBits. The gcmarkBits are replaced with a fresh zeroed
 	// out memory.
-	allocBits  *gcBits
-	gcmarkBits *gcBits
+	// allocBits 和 gcmarkBits — 分别用于标记内存的占用和回收情况
+	allocBits  *gcBits // 标记span中的elem哪些是被使用的，哪些是未被使用的；清除后将释放 allocBits ，并将 allocBits 设置为 gcmarkBits
+	gcmarkBits *gcBits // 标记span中的elem哪些是被标记了的，哪些是未被标记的
 
 	// sweep generation:
 	// if sweepgen == h->sweepgen - 2, the span needs sweeping
@@ -449,9 +471,13 @@ type mspan struct {
 	// if sweepgen == h->sweepgen + 3, the span was swept and then cached and is still cached
 	// h->sweepgen is incremented by 2 after every GC
 
-	sweepgen    uint32
-	divMul      uint32        // for divide by elemsize
-	allocCount  uint16        // number of allocated objects
+	sweepgen   uint32
+	divMul     uint32 // for divide by elemsize
+	allocCount uint16 // number of allocated objects
+	// 高七位标记内存块大小规格编号，runtime提供的预置规格对应编号1到67，编号0留出来，对应大于32KB的大块内存，一共68种。
+	// 然后每种规格会按照是否不需要GC扫描进一步区分开来，用最低位来标识：
+	//（1）包含指针的需要GC扫描，归为scannable这一类；
+	//（2）不含指针的归为noscan这一类。
 	spanclass   spanClass     // size class and noscan (uint8)
 	state       mSpanStateBox // mSpanInUse etc; accessed atomically (get/set methods)
 	needzero    uint8         // needs to be zeroed before allocation

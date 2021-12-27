@@ -402,6 +402,10 @@ func init() {
 func ReadMemStats(m *MemStats) {
 	stopTheWorld("read mem stats")
 
+	/**
+	读取前后需要付出 STW 的成本。对于 readmemstats_m 而言，是将运行时用于内存统计的 变量 memstats 中的值拷贝到用户态的 MemStats 中，
+	不过这样进行 memove 操作 是发生在系统栈上的，因此这部分的内存实际上是 OS 栈上的内存，因此最后还给用户加上 stats.StackInuse 的值来保证完整性
+	*/
 	systemstack(func() {
 		readmemstats_m(m)
 	})

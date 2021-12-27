@@ -844,23 +844,31 @@ retry:
 // base address for all 0-byte allocations
 var zerobase uintptr
 
-// nextFreeFast returns the next free object if one is quickly available.
-// Otherwise it returns 0.
+// nextFreeFast返回下一个快速可用的空闲对象。否则返回0。
 func nextFreeFast(s *mspan) gclinkptr {
+	// ctz64计算从低位起有多少个0，比如0x1280 返回的就是6，因为第一个出现1的bit为bit7
 	theBit := sys.Ctz64(s.allocCache) // Is there a free object in the allocCache?
-	if theBit < 64 {
+	if theBit < 64 {                  // 如果allocCache里面还有空闲块    // 0的s.allocCache 大小为64，所以和64比较
+		// allocCache 的一位对应mspan的一个object, 0代表已使用，1代表未使用。且allocCache和object的顺序是反向的
+		// 根据freeindex 和 theBit 可以计算出可以的object索引
 		result := s.freeindex + uintptr(theBit)
+		// result 指向空闲块的索引，该索引不能大于span所包含的总元素个数
 		if result < s.nelems {
 			freeidx := result + 1
+			// 如果是最后一位，那么直接返回0。后面的代码会做判断
 			if freeidx%64 == 0 && freeidx != s.nelems {
 				return 0
 			}
+			// 向右位移allocCache， 清除低位的0。 并且 +1,因为本次会使用1位
 			s.allocCache >>= uint(theBit + 1)
+			// 更新 freeindex
 			s.freeindex = freeidx
 			s.allocCount++
+			// 计算地址并返回
 			return gclinkptr(result*s.elemsize + s.base())
 		}
 	}
+	// 通过计算allocCache低位有多少个0，以及freeindex查找出mspan中可用的object的地址。更新freeindex和右移allocCache清除低位0
 	return 0
 }
 
@@ -870,24 +878,34 @@ func nextFreeFast(s *mspan) gclinkptr {
 // weight allocation. If it is a heavy weight allocation the caller must
 // determine whether a new GC cycle needs to be started or if the GC is active
 // whether this goroutine needs to assist the GC.
+// nextFree从缓存的span中返回下一个可用的空闲对象。
+// 否则，它将使用一个包含可用对象的span来填充缓存，并返回该对象和一个标志，表明这是一个大权重分配。
+// 如果是重权分配，调用者必须确定是否需要启动新的GC周期，或者是否GC处于活动状态(是否需要该goroutine协助GC)。
 //
 // Must run in a non-preemptible context since otherwise the owner of
 // c could change.
 func (c *mcache) nextFree(spc spanClass) (v gclinkptr, s *mspan, shouldhelpgc bool) {
+	// 先尝试获取 freeIndex，如已经获取到，则直接根据元素的大小来计算需要被 GC 的内存位置。
+	// 当 span 已满时候，会通过 refill 进行填充，而后再次尝试获取 freeIndex。
 	s = c.alloc[spc]
+	// 当前线程的内存管理单元中不存在空闲空间时，创建微对象和小对象需要调用 runtime.mcache.nextFree 从中心缓存或者页堆中获取新的管理单元，在这时就可能触发垃圾收集；
 	shouldhelpgc = false
+	// 获得 s.freeindex 中或之后 s 中下一个空闲对象的索引
 	freeIndex := s.nextFreeIndex()
 	if freeIndex == s.nelems {
 		// The span is full.
+		// span 已满，进行填充
 		if uintptr(s.allocCount) != s.nelems {
 			println("runtime: s.allocCount=", s.allocCount, "s.nelems=", s.nelems)
 			throw("s.allocCount != s.nelems && freeIndex == s.nelems")
 		}
+		// 重新向mcache补充新的mspan
 		c.refill(spc)
-		// 当前线程的内存管理单元中不存在空闲空间时，创建微对象和小对象需要调用 runtime.mcache.nextFree 从中心缓存或者页堆中获取新的管理单元，在这时就可能触发垃圾收集；
+		// 因为重新申请的span,需要gc
 		shouldhelpgc = true
+		// 再次获取 freeIndex
 		s = c.alloc[spc]
-
+		// 再次通过nextFreeIndex获取freeIndex
 		freeIndex = s.nextFreeIndex()
 	}
 
@@ -895,8 +913,9 @@ func (c *mcache) nextFree(spc spanClass) (v gclinkptr, s *mspan, shouldhelpgc bo
 		throw("freeIndex is not valid")
 	}
 
-	v = gclinkptr(freeIndex*s.elemsize + s.base())
-	s.allocCount++
+	// 获取到空闲块直接返回对应指针
+	v = gclinkptr(freeIndex*s.elemsize + s.base()) // 这部分内容需要被 gc 接管，因此需要计算位置
+	s.allocCount++                                 // 分配计数
 	if uintptr(s.allocCount) > s.nelems {
 		println("s.allocCount=", s.allocCount, "s.nelems=", s.nelems)
 		throw("s.allocCount > s.nelems")
@@ -981,6 +1000,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	}
 
 	// Set mp.mallocing to keep from being preempted by GC.
+	// 需要持有 M 才可进行分配，这是因为分配不仅可能涉及 mcache，还需要将正在分配的 M 标记为 mallocing，用于记录当前 M 的分配状态
 	mp := acquirem()
 	if mp.mallocing != 0 {
 		throw("malloc deadlock")
@@ -992,6 +1012,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 
 	shouldhelpgc := false
 	dataSize := userSize
+	// 获取当前 g 所在 M 所绑定 P 的 mcache
 	c := getMCache(mp)
 	if c == nil {
 		throw("mallocgc called without a P or outside bootstrapping")
@@ -1002,8 +1023,16 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	// In some cases block zeroing can profitably (for latency reduction purposes)
 	// be delayed till preemption is possible; delayedZeroing tracks that state.
 	delayedZeroing := false
+	/**
+	微对象 (0, 16B) — 先使用微型分配器，再依次尝试线程缓存、中心缓存和堆分配内存；
+	小对象 [16B, 32KB] — 依次尝试使用线程缓存、中心缓存和堆分配内存；
+	大对象 (32KB, +∞) — 直接在堆上分配内存
+	*/
 	if size <= maxSmallSize {
 		if noscan && size < maxTinySize {
+			/**
+			Go 语言运行时将小于 16 字节的对象划分为微对象,微分配器管理的对象不可以是指针类型
+			*/
 			// Tiny allocator.
 			//
 			// Tiny allocator combines several tiny allocation requests
@@ -1011,6 +1040,8 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 			// is freed when all subobjects are unreachable. The subobjects
 			// must be noscan (don't have pointers), this ensures that
 			// the amount of potentially wasted memory is bounded.
+			// 微小分配器将几个微小的分配请求合并到一个内存块中。当所有子对象都不可达时，释放产生的内存块。子对象必须是noscan(没有指针)，这确保潜在的内存浪费是有限的。
+
 			//
 			// Size of the memory block used for combining (maxTinySize) is tunable.
 			// Current setting is 16 bytes, which relates to 2x worst case memory
@@ -1020,11 +1051,14 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 			// 32 bytes provides more opportunities for combining,
 			// but can lead to 4x worst case wastage.
 			// The best case winning is 8x regardless of block size.
+			// 用于组合的内存块的大小(maxTinySize)是可调的。当前设置是16字节，这涉及到2倍最坏情况下的内存浪费(当除了一个子对象之外的所有子对象都不可达时)。
+			// 8字节不会造成任何浪费，但是提供了更少的组合机会。32字节为组合提供了更多的机会，但在最坏情况下可能导致4倍的损耗。不管区块大小如何，最好的情况是8倍。
 			//
 			// Objects obtained from tiny allocator must not be freed explicitly.
 			// So when an object will be freed explicitly, we ensure that
 			// its size >= maxTinySize.
-			//
+			// 不能显式释放从微小分配器获得的对象。因此，当显式释放一个对象时，我们确保其大小为>= maxTinySize。
+
 			// SetFinalizer has a special case for objects potentially coming
 			// from tiny allocator, it such case it allows to set finalizers
 			// for an inner byte of a memory block.
@@ -1033,8 +1067,10 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 			// standalone escaping variables. On a json benchmark
 			// the allocator reduces number of allocations by ~12% and
 			// reduces heap size by ~20%.
+			// 偏移量
 			off := c.tinyoffset
 			// Align tiny pointer for required (conservative) alignment.
+			// 将微型指针对齐以进行所需（保守）对齐。
 			if size&7 == 0 {
 				off = alignUp(off, 8)
 			} else if goarch.PtrSize == 4 && size == 12 {
@@ -1052,24 +1088,32 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 			}
 			if off+size <= maxTinySize && c.tiny != 0 {
 				// The object fits into existing tiny block.
+				// 能直接被当前的内存块容纳
 				x = unsafe.Pointer(c.tiny + off)
+				// 增加 offset
 				c.tinyoffset = off + size
+				// 统计数量
 				c.tinyAllocs++
+				// 完成分配，释放 m
 				mp.mallocing = 0
 				releasem(mp)
 				return x
 			}
 			// Allocate a new maxTinySize block.
+			// 当内存块中不包含空闲的内存时，下面的这段代码会先从线程缓存找到跨度类对应的内存管理单元 runtime.mspan，
+			// 调用 runtime.nextFreeFast 获取空闲的内存；当不存在空闲内存时，我们会调用 runtime.mcache.nextFree 从中心缓存或者页堆中获取可分配的内存块
 			span = c.alloc[tinySpanClass]
 			v := nextFreeFast(span)
 			if v == 0 {
 				v, span, shouldhelpgc = c.nextFree(tinySpanClass)
 			}
 			x = unsafe.Pointer(v)
+			// GTMD 清零
 			(*[2]uint64)(x)[0] = 0
 			(*[2]uint64)(x)[1] = 0
 			// See if we need to replace the existing tiny block with the new one
 			// based on amount of remaining free space.
+			// 看看我们是否需要根据剩余可用空间量替换现有的小块
 			if !raceenabled && (size < c.tinyoffset || c.tiny == 0) {
 				// Note: disabled when race detector is on, see comment near end of this function.
 				c.tiny = uintptr(x)
@@ -1077,6 +1121,13 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 			}
 			size = maxTinySize
 		} else {
+			/**
+			小对象是指大小为 16 字节到 32,768 字节的对象以及所有小于 16 字节的指针类型的对象，小对象的分配可以被分成以下的三个步骤：
+
+			确定分配对象的大小以及跨度类 runtime.spanClass；
+			从线程缓存、中心缓存或者堆中获取内存管理单元并从内存管理单元找到空闲的内存空间；
+			调用 runtime.memclrNoHeapPointers 清空空闲内存中的所有数据
+			*/
 			var sizeclass uint8
 			if size <= smallSizeMax-8 {
 				sizeclass = size_to_class8[divRoundUp(size, smallSizeDiv)]
@@ -1086,8 +1137,11 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 			size = uintptr(class_to_size[sizeclass])
 			spc := makeSpanClass(sizeclass, noscan)
 			span = c.alloc[spc]
+			// 获得对应 size 的 span 列表
 			v := nextFreeFast(span)
 			if v == 0 {
+				// 如果我们没有找到空闲的内存，运行时会通过 runtime.mcache.nextFree 找到新的内存管理单元
+				// 小对象的分配过程似乎很少，实际上基于 nextFreeFast 和 nextFree 两个分配调用隐藏了相当复杂的过程
 				v, span, shouldhelpgc = c.nextFree(spc)
 			}
 			x = unsafe.Pointer(v)
@@ -1096,10 +1150,14 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 			}
 		}
 	} else {
+		/**
+		运行时对于大于 32KB 的大对象会单独处理，我们不会从线程缓存或者中心缓存中获取内存管理单元，而是直接调用 runtime.mcache.allocLarge 分配大片内存
+		*/
 		// 当用户程序申请分配 32KB 以上的大对象时，一定会构建 runtime.gcTrigger 结构体尝试触发垃圾收集
 		shouldhelpgc = true
 		// For large allocations, keep track of zeroed state so that
 		// bulk zeroing can be happen later in a preemptible context.
+		// runtime.mcache.allocLarge 会计算分配该对象所需要的页数，它按照 8KB 的倍数在堆上申请内存
 		span = c.allocLarge(size, noscan)
 		span.freeindex = 1
 		span.allocCount = 1

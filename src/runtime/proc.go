@@ -662,7 +662,12 @@ func cpuinit() {
 //	call runtime·mstart
 //
 // The new G calls runtime·main.
-func schedinit() {
+// https://golang.design/under-the-hood/assets/boot.png
+// https://golang.design/under-the-hood/assets/sched-init.png
+// 进行各种运行时组件初始化工作，这包括我们的调度器与内存分配器、回收器的初始化
+// MPG 初始化过程。M/P/G 彼此的初始化顺序遵循：mcommoninit、procresize、newproc，他们分别负责初始化 M 资源池（allm）、P 资源池（allp）、G 的运行现场（g.sched）以及调度队列（p.runq）
+func schedinit() { // 调度器启动
+	// 启动时,先有g0，再处理m0,构建allm,之后生成跟处理器数量相同的p得到allp，其中p[0]和m0做相互绑定，对每一个p的cache生成，处理p的空闲队列信息
 	lockInit(&sched.lock, lockRankSched)
 	lockInit(&sched.sysmonlock, lockRankSysmon)
 	lockInit(&sched.deferlock, lockRankDefer)
@@ -685,27 +690,31 @@ func schedinit() {
 
 	// raceinit must be the first call to race detector.
 	// In particular, it must be done before mallocinit below calls racemapshadow.
-	_g_ := getg()
+	// getg函数在源代码中没有对应的定义，由编译器插入类似下面两行代码
+	// get_tls(CX)
+	// MOVQ g(CX), BX; BX存器里面现在放的是当前g结构体对象的地址
+	_g_ := getg() // _g_ = &g0
 	if raceenabled {
 		_g_.racectx, raceprocctx0 = raceinit()
 	}
+	// 在调度器初始函数执行的过程中会将 maxmcount 设置成 10000，这也就是一个 Go 语言程序能够创建的最大线程数
 
 	sched.maxmcount = 10000
 
 	// The world starts stopped.
 	worldStopped()
 
-	moduledataverify()
-	stackinit()
-	mallocinit()
-	cpuinit()      // must run before alginit
-	alginit()      // maps, hash, fastrand must not be used before this call
-	fastrandinit() // must run before mcommoninit
-	mcommoninit(_g_.m, -1)
-	modulesinit()   // provides activeModules
-	typelinksinit() // uses maps, activeModules
-	itabsinit()     // uses activeModules
-	stkobjinit()    // must run before GC starts
+	moduledataverify()     // 依赖模块检查
+	stackinit()            // goroutine 执行栈初始化
+	mallocinit()           //  内存分配器初始化
+	cpuinit()              // must run before alginit
+	alginit()              // maps, hash, fastrand must not be used before this call
+	fastrandinit()         // must run before mcommoninit
+	mcommoninit(_g_.m, -1) // 系统线程的部分初始化工作 // 初始化m0，因为从前面的代码我们知道g0->m = &m0
+	modulesinit()          // provides activeModules
+	typelinksinit()        // uses maps, activeModules
+	itabsinit()            // uses activeModules
+	stkobjinit()           // must run before GC starts
 
 	sigsave(&_g_.m.sigmask)
 	initSigmask = _g_.m.sigmask
@@ -718,14 +727,18 @@ func schedinit() {
 	goargs()
 	goenvs()
 	parsedebugvars()
-	gcinit()
+	gcinit() // 垃圾回收器初始化
 
 	lock(&sched.lock)
 	sched.lastpoll = uint64(nanotime())
 	procs := ncpu
+	// 系统中有多少核，就创建和初始化多少个p结构体对象
+	// 虽然最多可以创建 10000 个线程，但是可以同时运行的线程还是由 GOMAXPROCS 变量控制
 	if n, ok := atoi32(gogetenv("GOMAXPROCS")); ok && n > 0 {
 		procs = n
 	}
+	// 调用 runtime.procresize 是调度器启动的最后一步，在这时整个程序不会执行任何用户 Goroutine，调度器也会进入锁定状态
+	// 在这一步过后调度器会完成相应数量处理器的启动，等待用户创建运行新的 Goroutine 并为 Goroutine 调度处理器资源
 	if procresize(procs) != nil {
 		throw("unknown runnable goroutine during bootstrap")
 	}

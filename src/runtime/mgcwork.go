@@ -54,6 +54,7 @@ func init() {
 // disabling preemption (systemstack or acquirem).
 type gcWork struct {
 	// 垃圾收集器提供了生产和消费任务的抽象，该结构体持有了两个重要的工作缓冲区 wbuf1 和 wbuf2，这两个缓冲区分别是主缓冲区和备缓冲区
+	// 添加任务时总是从wbuf1添加，wbuf1满了就交换wbuf1和wbuf2，如果还是满的，就把当前wbuf1的工作flush到全局工作缓存中去。
 	// wbuf1 and wbuf2 are the primary and secondary work buffers.
 	//
 	// This can be thought of as a stack of both work buffers'
@@ -73,6 +74,19 @@ type gcWork struct {
 	//
 	// Invariant: Both wbuf1 and wbuf2 are nil or neither are.
 	wbuf1, wbuf2 *workbuf
+	/**
+	并发标记的分工问题？写屏障记录集的竞争问题？
+	mark worker执行GC标记工作消耗工作队列时,会处理本地工作队列和全局工作缓存中工作量的均衡问题（runtime.gcDrain和runtime.gcDrainN中）。
+
+	（1）如果全局工作缓存为空，就把当前p的工作分一些到全局工作队列中。具体做法是：如果wbuf2不为空，就把wbuf2整个flush到全局工作缓存中；如果wbuf2为空，wbuf1中元素个数大于4，就把wbuf1中一半的工作放到全局工作缓存中。
+
+	（2）如果本地工作队列为空，就从全局工作缓存获取任务放到本地队列中。
+
+	通过区分本地工作队列与全局工作缓存，缓解了执行并发标记工作时操作工作队列的竞争问题。
+
+	而mutator触发写屏障时并不会直接操作工作队列，而是把相关指针写入当前p的写屏障缓冲区(p.wbBuf)中。
+	当wbBuf已满或mark worker通过工作队列获取不到任务时,会把写屏障缓冲内容flush到工作缓存中,这样避免了mutator与GC之间关于写屏障记录的竞争问题。
+	*/
 
 	// Bytes marked (blackened) on this gcWork. This is aggregated
 	// into work.bytesMarked by dispose.

@@ -15,10 +15,10 @@ package runtime
 import "runtime/internal/atomic"
 
 // Central list of free objects of a given size.
-//
+// mcentral 中心缓存
 //go:notinheap
 type mcentral struct {
-	spanclass spanClass
+	spanclass spanClass // 指当前规格大小
 
 	// partial and full contain two mspan sets: one of swept in-use
 	// spans, and one of unswept in-use spans. These two trade
@@ -40,6 +40,10 @@ type mcentral struct {
 	// encounter swept spans, and these should be ignored.
 	partial [2]spanSet // list of spans with a free object
 	full    [2]spanSet // list of spans with no free objects
+	/**
+	其中 partial 和 full 都包含两个 spans 集数组。
+	一个用在扫描 spans,另一个用在未扫描spans。在每轮GC期间都扮演着不同的角色。mheap_.sweepgen 在每轮gc期间都会递增2
+	*/
 }
 
 // Initialize a single central free list.

@@ -82,6 +82,7 @@ func init() {
 // All fields of gcController are used only during a single mark
 // cycle.
 // 实现了垃圾收集的调步算法，它能够决定触发并行垃圾收集的时间和待处理的工作；
+// https://pic1.zhimg.com/v2-b6938914daf1aa351f96375beb98c0c4_b.jpg gc流程
 var gcController gcControllerState
 
 type gcControllerState struct {
@@ -269,6 +270,27 @@ type gcControllerState struct {
 	stackScanWork   atomic.Int64
 	globalsScanWork atomic.Int64
 
+	/**
+	并发GC如何缓解内存分配压力？
+	为了避免GC执行过程中，内存分配压力过大，还实现了GC Assist机制，包括“辅助标记”和“辅助清扫”。
+
+	如果协程要分配内存，而GC标记工作尚未完成，它就要负担一部分标记工作，要申请的内存越大，对应要负担的标记任务就越多，这是一种借贷偿还机制：
+
+	当前G要申请的内存大小对应它所负担的债务多少，债务越多，就需要做越多的标记工作来偿还债务。
+
+	不过后台mark worker每完成一定量标记任务就会在全局gcController这里存一笔信用（bgScanCredit），有债务需要偿还的G可以从gcController这里steal尽量多的信用来抵消自己所欠的债务。
+
+	不管是真正执行标记扫描任务，还是从gcController这里steal信用，如果这一次偿还了当前债务以后还有结余，就可以暂存到当前G这里用于抵消下次内存分配造成的债务
+
+	此外，在清扫阶段内存分配可能会触发“辅助清扫”。
+
+	例如，直接从mheap分配大对象时，为了维持内存分配量与清扫页面数的线性关系，可能需要执行一定量的清扫工作。
+
+	再例如，从本地缓存中直接分配一个span时，若存在尚未清扫的可用span，也需要先清扫这个span再分配使用。
+
+	“辅助标记”和“辅助清扫”可以避免出现并发垃圾回收中，因过大的内存分配压力导致GC来不及回收的情况。
+	*/
+	// gc信用 https://pic1.zhimg.com/v2-0121242945a3293897f75c4d79ccf31c_b.jpg
 	// bgScanCredit is the scan work credit accumulated by the
 	// concurrent background scan. This credit is accumulated by
 	// the background scan and stolen by mutator assists. This is
