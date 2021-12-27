@@ -337,7 +337,7 @@ ok:
 
 	// create a new goroutine to start program
 	MOVQ	$runtime·mainPC(SB), AX		// entry // entry,mainPC是runtime.main
-		// # newproc的第二个参数入栈，也就是新的goroutine需要执行的函数
+    // # newproc的第一个参数入栈，也就是新的goroutine需要执行的函数
 	PUSHQ	AX
 	CALL	runtime·newproc(SB) // 创建main goroutine  runtime.proc.go
 	POPQ	AX

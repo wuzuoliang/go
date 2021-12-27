@@ -310,6 +310,7 @@ func setMNoWB(mp **m, new *m) {
 }
 
 type gobuf struct {
+	// gobuf结构体用于保存goroutine的调度信息，这些内容会在调度器保存或者恢复上下文的时候用到，其中的栈指针和程序计数器会用来存储或者恢复寄存器中的值，改变程序即将执行的代码
 	// The offsets of sp, pc, and g are known to (hard-coded in) libmach.
 	//
 	// ctxt is unusual with respect to GC: it may be a
@@ -322,13 +323,15 @@ type gobuf struct {
 	// and restores it doesn't need write barriers. It's still
 	// typed as a pointer so that any other writes from Go get
 	// write barriers.
-	sp   uintptr
-	pc   uintptr
-	g    guintptr
+	sp   uintptr  // 栈指针 保存CPU的rsp寄存器的值
+	pc   uintptr  // 程序计数器 保存CPU的rip寄存器的值
+	g    guintptr // 持有 runtime.gobuf 的 Goroutine 记录当前这个gobuf对象属于哪个goroutine
 	ctxt unsafe.Pointer
-	ret  uintptr
-	lr   uintptr
-	bp   uintptr // for framepointer-enabled architectures
+	// 保存系统调用的返回值，因为从系统调用返回之后如果p被其它工作线程抢占，
+	// 则这个goroutine会被放入全局运行队列被其它工作线程调度，其它线程需要知道系统调用的返回值。
+	ret uintptr
+	lr  uintptr
+	bp  uintptr // for framepointer-enabled architectures 保存CPU的rip寄存器的值
 }
 
 // sudog represents a g in a wait list, such as for sending/receiving

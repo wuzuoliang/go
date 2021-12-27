@@ -525,6 +525,7 @@ func mallocinit() {
 		//
 		// On AIX, mmaps starts at 0x0A00000000000000 for 64-bit.
 		// processes.
+		// 先申请128个arena，后续需要扩大会调用grow相关函数
 		for i := 0x7f; i >= 0; i-- {
 			var p uintptr
 			switch {

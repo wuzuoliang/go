@@ -197,6 +197,8 @@ func goenvs() {
 // May run with m.p==nil, so write barriers are not allowed.
 //go:nowritebarrierrec
 func newosproc(mp *m) {
+	// 使用系统调用 clone 创建的线程会在线程主动调用 exit、或者传入的函数 runtime.mstart 返回会主动退出，
+	// runtime.mstart 会执行调用 runtime.newm 时传入的匿名函数 fn，到这里也就完成了从线程创建到销毁的整个闭环
 	stk := unsafe.Pointer(mp.g0.stack.hi)
 	if false {
 		print("newosproc stk=", stk, " m=", mp, " g=", mp.g0, " id=", mp.id, " ostk=", &mp, "\n")
@@ -213,6 +215,7 @@ func newosproc(mp *m) {
 
 	// Find out OS stack size for our own stack guard.
 	var stacksize uintptr
+	// 通知 pthread 库不会 join 这个线程。
 	if pthread_attr_getstacksize(&attr, &stacksize) != 0 {
 		write(2, unsafe.Pointer(&failthreadcreate[0]), int32(len(failthreadcreate)))
 		exit(1)
@@ -227,6 +230,7 @@ func newosproc(mp *m) {
 
 	// Finally, create the thread. It starts at mstart_stub, which does some low-level
 	// setup and then calls mstart.
+	// 最后创建线程，在 mstart_stub 开始，进行底层设置并调用 mstart
 	var oset sigset
 	sigprocmask(_SIG_SETMASK, &sigset_all, &oset)
 	err = pthread_create(&attr, abi.FuncPCABI0(mstart_stub), unsafe.Pointer(mp))
@@ -301,6 +305,7 @@ func libpreinit() {
 // Called to initialize a new m (including the bootstrap m).
 // Called on the parent thread (main thread in case of bootstrap), can allocate memory.
 func mpreinit(mp *m) {
+	// 信号线程初始化
 	mp.gsignal = malg(32 * 1024) // OS X wants >= 8K
 	mp.gsignal.m = mp
 	if GOOS == "darwin" && GOARCH == "arm64" {

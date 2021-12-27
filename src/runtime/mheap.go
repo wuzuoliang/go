@@ -741,7 +741,7 @@ func (h *mheap) init() {
 	h.spanalloc.zero = false
 
 	// h->mapcache needs no init
-
+	// 先把mcentral初始化136个spanClass的空结构
 	for i := range h.central {
 		h.central[i].mcentral.init(spanClass(i))
 	}

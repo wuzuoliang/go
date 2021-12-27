@@ -844,6 +844,31 @@ func mReserveID() int64 {
 
 // Pre-allocated ID may be passed as 'id', or omitted by passing -1.
 func mcommoninit(mp *m, id int64) {
+	/**
+	1:程序运行之初的 M0，无需创建已经存在的系统线程，只需对其进行初始化即可。其函数调用链如下所示：
+	schedinit
+	 ↳ mcommoninit
+	    ↳ mpreinit
+	       ↳ msigsave
+	          ↳ initSigmask
+	             ↳ mstart
+
+	2:需要时创建的 M，某些特殊情况下一定会创建一个新的 M 并进行初始化，而后创建系统线程。这些情况包括：
+	startm 时没有空闲 m
+	startTemplateThread 时
+	startTheWorldWithSema 时 p 如果没有 m
+	main 时创建系统监控
+	oneNewExtraM 时
+	其调用链为：
+
+	newm
+	 ↳ allocm
+	    ↳ mcommoninit
+	       ↳ mpreinit
+	          ↳ newm1
+	             ↳ newosproc
+	                ↳ mstart
+	*/
 	_g_ := getg()
 
 	// g0 stack won't make sense for user (and is not necessary unwindable).
@@ -862,17 +887,22 @@ func mcommoninit(mp *m, id int64) {
 	// cputicks is not very random in startup virtual machine
 	mp.fastrand = uint64(int64Hash(uint64(mp.id), fastrandseed^uintptr(cputicks())))
 
+	// 在 mcommoninit 里，会在一个父线程（或引导时的主线程）上调用 mpreinit，并最终会为一个 M 创建 gsignal，是一个在 M 上用于处理信号的 Goroutine。
+	// 因此，除了 g0 外，其实第一个创建的 g 应该是它， 但是它并没有设置 Goid (Goroutine ID)
 	mpreinit(mp)
+	// gsignal 的运行栈边界处理
 	if mp.gsignal != nil {
 		mp.gsignal.stackguard1 = mp.gsignal.stack.lo + _StackGuard
 	}
 
 	// Add to allm so garbage collector doesn't free g->m
 	// when it is just in a register or thread-local storage.
+	// 添加到 allm 中，从而当它刚保存到寄存器或本地线程存储时候 GC 不会释放 g.m
 	mp.alllink = allm
 
 	// NumCgoCall() iterates over allm w/o schedlock,
 	// so we need to publish it safely.
+	// NumCgoCall() 会在没有使用 schedlock 时遍历 allm，等价于 allm = mp
 	atomicstorep(unsafe.Pointer(&allm), unsafe.Pointer(mp))
 	unlock(&sched.lock)
 
@@ -2324,13 +2354,18 @@ var newmHandoff struct {
 // Create a new m. It will start off with a call to fn, or else the scheduler.
 // fn needs to be static and not a heap allocated closure.
 // May run with m.p==nil, so write barriers are not allowed.
-//
+// 创建一个新的 m. 它会启动并调用 fn 或调度器
+// fn 必须是静态、非堆上分配的闭包
+// 它可能在 m.p==nil 时运行，因此不允许 write barrier
 // id is optional pre-allocated m ID. Omit by passing -1.
 //go:nowritebarrierrec
 func newm(fn func(), _p_ *p, id int64) {
+	// 分配一个 m
 	mp := allocm(_p_, fn, id)
 	mp.doesPark = (_p_ != nil)
+	// 设置 p 用于后续绑定
 	mp.nextp.set(_p_)
+	// 在调度器的初始化的阶段，initSigmask 目标旨在记录主线程 M0 创建之初的屏蔽字 sigmask
 	mp.sigmask = initSigmask
 	if gp := getg(); gp != nil && gp.m != nil && (gp.m.lockedExt != 0 || gp.m.incgo) && GOOS != "plan9" {
 		// We're on a locked M or a thread that may have been
@@ -2352,11 +2387,13 @@ func newm(fn func(), _p_ *p, id int64) {
 		newmHandoff.newm.set(mp)
 		if newmHandoff.waiting {
 			newmHandoff.waiting = false
+			// 唤醒 m, 自旋到非自旋
 			notewakeup(&newmHandoff.wake)
 		}
 		unlock(&newmHandoff.lock)
 		return
 	}
+	// 运行时执行系统监控不需要处理器，系统监控的 Goroutine 会直接在创建的线程上运行：
 	newm1(mp)
 }
 
@@ -2381,6 +2418,9 @@ func newm1(mp *m) {
 		return
 	}
 	execLock.rlock() // Prevent process clone.
+	// 创建p从而绑定m
+	// 该函数在 Linux 平台上会通过系统调用 clone 创建新的操作系统线程，它也是创建线程链路上距离操作系统最近的 Go 语言函数
+	// 既然是 newosproc ，我们此刻仍在 Go 的空间中，那么实现就是操作系统特定的了，
 	newosproc(mp)
 	execLock.runlock()
 }
@@ -4589,16 +4629,26 @@ func malg(stacksize int32) *g {
 // Create a new g running fn.
 // Put it on the queue of g's waiting to run.
 // The compiler turns a go statement into a call to this.
+// 将其加入处理器的运行队列并在满足条件时调用 runtime.wakep 唤醒新的处理执行 Goroutine
+// runtime.newproc、runtime.ready、runtime.resetspinning、runtime.schedule、runtime.startTheWorldWithSema、runtime.wakeNetPoller
 func newproc(fn *funcval) {
-	gp := getg()
-	pc := getcallerpc()
-	systemstack(func() {
+	// func newproc(siz int32, fn *funcval) 以前第一个参数是表示参数参数大小和表示函数的指针 funcval，它会获取 Goroutine 以及调用方的程序计数器，
+	// 现在只有一个funcval了，里面获取参数的方式修改了
+	gp := getg()         // 获取正在运行的g，初始化时是m0.g0
+	pc := getcallerpc()  // getcallerpc()返回一个地址，也就是调用newproc时由call指令压栈的函数返回地址
+	systemstack(func() { // 使用systemstack函数切换到g0栈
 		newg := newproc1(fn, gp, pc)
 
 		_p_ := getg().m.p.ptr()
+		// 加入q队列
+		// 当 next 为 true 时，将 Goroutine 设置到处理器的 runnext 作为下一个处理器执行的任务；
+		// 当 next 为 false 并且本地运行队列还有剩余空间时，将 Goroutine 加入处理器持有的本地运行队列；
+		// 当处理器的本地运行队列已经没有剩余空间时就会把本地队列中的一部分 Goroutine 和待加入的 Goroutine 通过 runtime.runqputslow 添加到调度器持有的全局运行队列上
+		// 处理器本地的运行队列是一个使用数组构成的环形链表，它最多可以存储 256 个待执行任务
+		// https://img2018.cnblogs.com/blog/1671650/201905/1671650-20190507143642924-1324368776.png
 		runqput(_p_, newg, true)
 
-		if mainStarted {
+		if mainStarted { // 在  main goroutine 赋值为true
 			wakep()
 		}
 	})
@@ -4614,13 +4664,18 @@ func newproc1(fn *funcval, callergp *g, callerpc uintptr) *g {
 		_g_.m.throwing = -1 // do not dump full stacks
 		throw("go of nil func value")
 	}
+	// _g_.m.locks++ 禁止抢占
 	acquirem() // disable preemption because it can be holding p in a local var
-
-	_p_ := _g_.m.p.ptr()
-	newg := gfget(_p_)
-	if newg == nil {
-		newg = malg(_StackMin)
-		casgstatus(newg, _Gidle, _Gdead)
+	// 先从处理器的 gFree 列表中查找空闲的 Goroutine，如果不存在空闲的 Goroutine，会通过 runtime.malg 创建一个栈大小足够的新结构体
+	_p_ := _g_.m.p.ptr() // 获取当前 P // 初始化时_p_ = g0.m.p，从前面的分析可以知道其实就是allp[0]
+	newg := gfget(_p_)   // 从 p.gFree 获取空闲的 g，如果 p.gFree 为空，则从全局的 sched.gFree 中搬运一部分到 p.gFree // 从p的本地缓冲里获取一个没有使用的g，初始化时没有，返回nil
+	if newg == nil {     // 如果还是获取不到 g 的话，则申请分配一个 g
+		// 当调度器的 gFree 和处理器的 gFree 列表都不存在结构体时，运行时会调用 runtime.malg 初始化新的 runtime.g 结构，
+		// 如果申请的堆栈大小大于 0，这里会通过 runtime.stackalloc 分配 2KB 的栈空间
+		// new一个g结构体对象，然后从堆上为其分配栈，并设置g的stack成员和两个stackgard成员
+		newg = malg(_StackMin)           // 最小堆栈 2k
+		casgstatus(newg, _Gidle, _Gdead) // 确保 new 的状态由 _Gidle 转为 _Gdead
+		// runtime.malg 返回的 Goroutine 会存储到全局变量 allgs 中。
 		allgadd(newg) // publishes with a g->status of Gdead so GC scanner doesn't look at uninitialized stack.
 	}
 	if newg.stack.hi == 0 {
@@ -4631,6 +4686,8 @@ func newproc1(fn *funcval, callergp *g, callerpc uintptr) *g {
 		throw("newproc1: new g is not Gdead")
 	}
 
+	// 调整g的栈顶置针，无需关注
+	// 调用 runtime.memmove 将 fn 函数的所有参数拷贝到栈上，argp 和 narg 分别是参数的内存空间和大小，我们在该方法中会将参数对应的内存空间整块拷贝到栈上
 	totalSize := uintptr(4*goarch.PtrSize + sys.MinFrameSize) // extra space in case of reads slightly beyond frame
 	totalSize = alignUp(totalSize, sys.StackAlign)
 	sp := newg.stack.hi - totalSize
@@ -4641,20 +4698,31 @@ func newproc1(fn *funcval, callergp *g, callerpc uintptr) *g {
 		prepGoExitFrame(sp)
 		spArg += sys.MinFrameSize
 	}
-
+	// 调度信息
+	// 拷贝了栈上的参数之后，运行时创建 Goroutine 时会通过下面的代码设置调度相关的信息，
+	// runtime.newproc1 会设置新的 Goroutine 结构体的参数，包括栈指针、程序计数器并更新其状态到 _Grunnable 并返回
+	// 把newg.sched结构体成员的所有成员设置为0
 	memclrNoHeapPointers(unsafe.Pointer(&newg.sched), unsafe.Sizeof(newg.sched))
-	newg.sched.sp = sp
+	// 调度需要的信息
+	// 设置newg的sched成员，调度器需要依靠这些字段才能把goroutine调度到CPU上运行。
+	newg.sched.sp = sp //newg的栈顶
 	newg.stktopsp = sp
+	// newg.sched.pc表示当newg被调度起来运行时从这个地址开始执行指令
+	// 把pc设置成了goexit这个函数偏移1（sys.PCQuantum等于1）的位置
+	// 运行时创建 Goroutine 时会通过下面的代码设置调度相关的信息，前两行代码会分别将程序计数器和 Goroutine 设置成 runtime.goexit 和新创建 Goroutine 运行的函数
 	newg.sched.pc = abi.FuncPCABI0(goexit) + sys.PCQuantum // +PCQuantum so that previous instruction is in same function
 	newg.sched.g = guintptr(unsafe.Pointer(newg))
-	gostartcallfn(&newg.sched, fn)
-	newg.gopc = callerpc
+	// 上述调度信息 sched 不是初始化后的 Goroutine 的最终结果，它还需要经过 runtime.gostartcallfn 和 runtime.gostartcall 的处理,对 newg.sched 做调整
+	gostartcallfn(&newg.sched, fn) //调整sched成员和newg的栈
+	newg.gopc = callerpc           //主要用于traceback
+	// 设置newg的startpc为fn.fn，该成员主要用于函数调用栈的traceback和栈收缩
+	// newg真正从哪里开始执行并不依赖于这个成员，而是sched.pc
 	newg.ancestors = saveAncestors(callergp)
 	newg.startpc = fn.fn
 	if _g_.m.curg != nil {
 		newg.labels = _g_.m.curg.labels
 	}
-	if isSystemGoroutine(newg, false) {
+	if isSystemGoroutine(newg, false) { // 判断是否为 runtime 的 goroutine
 		atomic.Xadd(&sched.ngsys, +1)
 	}
 	// Track initial transition?
@@ -4662,6 +4730,7 @@ func newproc1(fn *funcval, callergp *g, callerpc uintptr) *g {
 	if newg.trackingSeq%gTrackingPeriod == 0 {
 		newg.tracking = true
 	}
+	// 设置g的状态为_Grunnable，表示这个g代表的goroutine可以运行了
 	casgstatus(newg, _Gdead, _Grunnable)
 	gcController.addScannableStack(_p_, int64(newg.stack.hi-newg.stack.lo))
 
@@ -4669,6 +4738,7 @@ func newproc1(fn *funcval, callergp *g, callerpc uintptr) *g {
 		// Sched.goidgen is the last allocated id,
 		// this batch must be [sched.goidgen+1, sched.goidgen+GoidCacheBatch].
 		// At startup sched.goidgen=0, so main goroutine receives goid=1.
+		// 从全局的 sched 批量申请 goroutine id
 		_p_.goidcache = atomic.Xadd64(&sched.goidgen, _GoidCacheBatch)
 		_p_.goidcache -= _GoidCacheBatch - 1
 		_p_.goidcacheend = _p_.goidcache + _GoidCacheBatch
@@ -4770,6 +4840,7 @@ retry:
 	if _p_.gFree.empty() && (!sched.gFree.stack.empty() || !sched.gFree.noStack.empty()) {
 		lock(&sched.gFree.lock)
 		// Move a batch of free Gs to the P.
+		// 当处理器的 Goroutine 列表为空时，会将调度器持有的空闲 Goroutine 转移到当前处理器上，直到 gFree 列表中的 Goroutine 数量达到 32
 		for _p_.gFree.n < 32 {
 			// Prefer Gs with stacks.
 			gp := sched.gFree.stack.pop()
@@ -4786,6 +4857,7 @@ retry:
 		unlock(&sched.gFree.lock)
 		goto retry
 	}
+	// 当处理器的 Goroutine 数量充足时，会从列表头部返回一个新的 Goroutine
 	gp := _p_.gFree.pop()
 	if gp == nil {
 		return nil
@@ -4848,6 +4920,7 @@ func dolockOSThread() {
 	if GOARCH == "wasm" {
 		return // no threads on wasm yet
 	}
+	// 会分别设置线程的 lockedg 字段和 Goroutine 的 lockedm 字段，这两行代码会绑定线程和 Goroutine
 	_g_ := getg()
 	_g_.m.lockedg.set(_g_)
 	_g_.lockedm.set(_g_.m)
@@ -4869,11 +4942,16 @@ func dolockOSThread() {
 //
 // A goroutine should call LockOSThread before calling OS services or
 // non-Go library functions that depend on per-thread state.
+// 线程管理
+// Go 语言的运行时会通过调度器改变线程的所有权，它也提供了 runtime.LockOSThread 和 runtime.UnlockOSThread 让我们有能力绑定 Goroutine 和线程完成一些比较特殊的操作。
 func LockOSThread() {
+	// 绑定 Goroutine 和当前线程
 	if atomic.Load(&newmHandoff.haveTemplateThread) == 0 && GOOS != "plan9" {
 		// If we need to start a new thread from the locked
 		// thread, we need the template thread. Start it now
 		// while we're in a known-good state.
+		// 如果我们需要从锁定的线程启动一个新线程，我们需要模板线程。
+		// 当我们处于一个已知良好的状态时，立即启动它。
 		startTemplateThread()
 	}
 	_g_ := getg()
@@ -4894,6 +4972,7 @@ func lockOSThread() {
 // dounlockOSThread is called by UnlockOSThread and unlockOSThread below
 // after they update m->locked. Do not allow preemption during this call,
 // or else the m might be in different in this function than in the caller.
+// 当 Goroutine 完成了特定的操作之后，会调用以下函数 runtime.UnlockOSThread 分离 Goroutine 和线程
 //go:nosplit
 func dounlockOSThread() {
 	if GOARCH == "wasm" {
