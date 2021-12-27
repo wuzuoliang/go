@@ -163,7 +163,7 @@ TEXT runtime·getcallerpc(SB),NOSPLIT|NOFRAME,$0-8
 // calling the scheduler calling newm calling gc), so we must
 // record an argument size. For that purpose, it has no arguments.
 
-// func morestack()
+// func morestack() 栈扩容
 TEXT runtime·morestack(SB),NOSPLIT|NOFRAME,$0-0
 	// Cannot grow scheduler stack (m->g0).
 	MOV	g_m(g), A0
@@ -204,7 +204,7 @@ TEXT runtime·morestack(SB),NOSPLIT|NOFRAME,$0-0
 	// is still in this function, and not the beginning of the next.
 	UNDEF
 
-// func morestack_noctxt()
+// func morestack_noctxt() 栈扩容
 TEXT runtime·morestack_noctxt(SB),NOSPLIT|NOFRAME,$0-0
 	MOV	ZERO, CTXT
 	JMP	runtime·morestack(SB)

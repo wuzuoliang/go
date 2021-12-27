@@ -904,6 +904,7 @@ func (h *mheap) alloc(npages uintptr, spanclass spanClass) *mspan {
 	// to be able to allocate heap.
 	var s *mspan
 	systemstack(func() {
+		// 为了防止过度的堆增长，在分配n个页面之前，我们需要扫描和回收至少n个页面。
 		// To prevent excessive heap growth, before allocating n pages
 		// we need to sweep and reclaim at least n pages.
 		if !isSweepDone() {
@@ -1130,6 +1131,7 @@ func (h *mheap) allocSpan(npages uintptr, typ spanAllocType, spanclass spanClass
 	// If the allocation is small enough, try the page cache!
 	// The page cache does not support aligned allocations, so we cannot use
 	// it if we need to provide a physical page aligned stack allocation.
+	// 通过处理器的页缓存 runtime.pageCache 申请内存
 	pp := gp.m.p.ptr()
 	if !needPhysPageAlign && pp != nil && npages < pageCachePages/4 {
 		c := &pp.pcache
@@ -1142,6 +1144,7 @@ func (h *mheap) allocSpan(npages uintptr, typ spanAllocType, spanclass spanClass
 		}
 
 		// Try to allocate from the cache.
+		// 如果申请的内存比较小，获取申请内存的处理器并尝试调用 runtime.pageCache.alloc 获取内存区域的基地址和大小
 		base, scav = c.alloc(npages)
 		if base != 0 {
 			s = h.tryAllocMSpan()
@@ -1162,10 +1165,13 @@ func (h *mheap) allocSpan(npages uintptr, typ spanAllocType, spanclass spanClass
 		npages += physPageSize / pageSize
 	}
 
+	// 通过全局的页分配器 runtime.pageAlloc 申请内存
 	if base == 0 {
 		// Try to acquire a base address.
+		// 如果申请的内存比较大或者线程的页缓存中内存不足，会通过 runtime.pageAlloc.alloc 在页堆上申请内存
 		base, scav = h.pages.alloc(npages)
 		if base == 0 {
+			// 如果发现页堆上的内存不足，会尝试通过 runtime.mheap.grow 扩容并重新调用 runtime.pageAlloc.alloc 申请内存
 			var ok bool
 			growth, ok = h.grow(npages)
 			if !ok {
@@ -1174,8 +1180,10 @@ func (h *mheap) allocSpan(npages uintptr, typ spanAllocType, spanclass spanClass
 			}
 			base, scav = h.pages.alloc(npages)
 			if base == 0 {
+				// 如果没有申请到内存，意味着扩容失败，宿主机可能不存在空闲内存，运行时会直接中止当前程序
 				throw("grew heap, but no adequate free space found")
 			}
+			// 如果申请到内存，意味着扩容成功
 		}
 	}
 	if s == nil {
@@ -1310,6 +1318,7 @@ HaveSpan:
 	// this thread until pointers into the span are published (and
 	// we execute a publication barrier at the end of this function
 	// before that happens) or pageInUse is updated.
+	// 建立页堆与内存单元的联系
 	h.setSpans(s.base(), npages, s)
 
 	if !typ.manual() {

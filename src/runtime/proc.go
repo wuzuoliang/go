@@ -4276,12 +4276,14 @@ func syscall_runtime_AfterExec() {
 	execLock.unlock()
 }
 
+// 栈分配
 // Allocate a new g, with a stack big enough for stacksize bytes.
 func malg(stacksize int32) *g {
 	newg := new(g)
 	if stacksize >= 0 {
 		stacksize = round2(_StackSystem + stacksize)
 		systemstack(func() {
+			// stackalloc 真正分配的函数
 			newg.stack = stackalloc(uint32(stacksize))
 		})
 		newg.stackguard0 = newg.stack.lo + _StackGuard

@@ -149,6 +149,7 @@ const (
 	stackPoisonMin = uintptrMask & -4096
 )
 
+// 全局栈缓存,分配 32KB 以下的栈内存，根据大小分配顺序，2K开始，每次是上一次的两倍，2、4、8、16..
 // Global pool of spans that have free stacks.
 // Stacks are assigned an order according to size.
 //     order = log_2(size/FixedStack)
@@ -160,16 +161,24 @@ var stackpool [_NumStackOrders]struct {
 
 //go:notinheap
 type stackpoolItem struct {
-	mu   mutex
+	mu mutex
+	// stackpool、stackLarge 这两个用于分配空间的全局变量都与内存管理单元 runtime.mspan 有关，
+	// 可以认为 Go 语言的栈内存都是分配在堆上的，运行时初始化会调用 runtime.stackinit 初始化这些全局变量
 	span mSpanList
 }
 
+// 全局大栈缓存,分配 32KB 以上的栈内存
 // Global pool of large stack spans.
 var stackLarge struct {
 	lock mutex
 	free [heapAddrBits - pageShift]mSpanList // free lists by log_2(s.npages)
 }
 
+/**
+栈初始化
+栈空间在运行时中包含两个重要的全局变量，分别是 runtime.stackpool 和 runtime.stackLarge，这两个变量分别表示全局的栈缓存和大栈缓存，前者可以分配小于 32KB 的内存，后者用来分配大于 32KB 的栈空间
+https://img.draveness.me/2020-03-23-15849514795892-stack-memory.png
+*/
 func stackinit() {
 	if _StackCacheSize&_PageMask != 0 {
 		throw("cache size must be a multiple of page size")
@@ -343,6 +352,11 @@ func stackalloc(n uint32) stack {
 	// Stackalloc must be called on scheduler stack, so that we
 	// never try to grow the stack during the code that stackalloc runs.
 	// Doing so would cause a deadlock (issue 1547).
+	/**
+	如果栈空间较小，使用全局栈缓存或者线程缓存上固定大小的空闲链表分配内存；
+	如果栈空间较大，从全局的大栈缓存 runtime.stackLarge 中获取内存空间；
+	如果栈空间较大并且 runtime.stackLarge 空间不足，在堆上申请一片大小足够内存空间
+	*/
 	thisg := getg()
 	if thisg != thisg.m.g0 {
 		throw("stackalloc not on scheduler stack")
@@ -363,6 +377,7 @@ func stackalloc(n uint32) stack {
 		return stack{uintptr(v), uintptr(v) + uintptr(n)}
 	}
 
+	// 在 Linux 上，_FixedStack = 2048、_NumStackOrders = 4、_StackCacheSize = 32768，也就是如果申请的栈空间小于 32KB，会在全局栈缓存池或者线程的栈缓存中初始化内存
 	// Small stacks are allocated with a fixed-size free-list allocator.
 	// If we need a stack of a bigger size, we fall back on allocating
 	// a dedicated span.
@@ -376,6 +391,7 @@ func stackalloc(n uint32) stack {
 		}
 		var x gclinkptr
 		if stackNoCache != 0 || thisg.m.p == 0 || thisg.m.preemptoff != "" {
+			// 在全局的栈缓存池 runtime.stackpool 中获取新的内存，如果栈缓存池中不包含剩余的内存，运行时会从堆上申请一片内存空间；
 			// thisg.m.p == 0 can happen in the guts of exitsyscall
 			// or procresize. Just get a stack from the global pool.
 			// Also don't touch stackcache during gc
@@ -384,6 +400,7 @@ func stackalloc(n uint32) stack {
 			x = stackpoolalloc(order)
 			unlock(&stackpool[order].item.mu)
 		} else {
+			// 如果线程缓存中包含足够的空间，我们可以从线程本地的缓存中获取内存，一旦发现空间不足就会调用 runtime.stackcacherefill 从堆上获取新的内存。
 			c := thisg.m.p.ptr().mcache
 			x = c.stackcache[order].list
 			if x.ptr() == nil {
@@ -395,6 +412,7 @@ func stackalloc(n uint32) stack {
 		}
 		v = unsafe.Pointer(x)
 	} else {
+		// 如果 Goroutine 申请的内存空间过大，运行时会查看 runtime.stackLarge 中是否有剩余的空间，如果不存在剩余空间，它也会从堆上申请新的内存
 		var s *mspan
 		npage := uintptr(n) >> _PageShift
 		log2npage := stacklog2(npage)
@@ -879,8 +897,16 @@ func copystack(gp *g, newsize uintptr) {
 	// Compute adjustment.
 	var adjinfo adjustinfo
 	adjinfo.old = old
+	// 计算新栈和旧栈之间内存地址差
 	adjinfo.delta = new.hi - old.hi
 
+	/**
+	新栈的初始化和数据的复制是一个比较简单的过程，不过这不是整个过程中最复杂的地方，我们还需要将指向源栈中内存指向新的栈，在这期间我们需要分别调整以下的指针：
+
+	调用 runtime.adjustsudogs 或者 runtime.syncadjustsudogs 调整 runtime.sudog 结构体的指针；
+	调用 runtime.memmove 将源栈中的整片内存拷贝到新的栈中；
+	调用 runtime.adjustctxt、runtime.adjustdefers 和 runtime.adjustpanics 调整剩余 Goroutine 相关数据结构的指针；
+	*/
 	// Adjust sudogs, synchronizing with channel ops if necessary.
 	ncopy := used
 	if !gp.activeStackChans {
@@ -933,6 +959,7 @@ func copystack(gp *g, newsize uintptr) {
 	if stackPoisonCopy != 0 {
 		fillstack(old, 0xfc)
 	}
+	// 所有的指针都被调整后，我们就可以更新 Goroutine 的几个变量并通过 runtime.stackfree 释放原始栈的内存空间了
 	stackfree(old)
 }
 
@@ -1016,6 +1043,7 @@ func newstack() {
 	// If the GC is in some way dependent on this goroutine (for example,
 	// it needs a lock held by the goroutine), that small preemption turns
 	// into a real deadlock.
+	// 当前线程可以被抢占时，直接调用 runtime.gogo 触发调度器的调度；
 	preempt := stackguard0 == stackPreempt
 	if preempt {
 		if !canPreemptM(thisg.m) {
@@ -1054,6 +1082,7 @@ func newstack() {
 		}
 
 		if gp.preemptShrink {
+			// 如果当前 Goroutine 在垃圾回收被 runtime.scanstack 标记成了需要收缩栈，调用 runtime.shrinkstack；
 			// We're at a synchronous safe point now, so
 			// do the pending stack shrink.
 			gp.preemptShrink = false
@@ -1061,13 +1090,16 @@ func newstack() {
 		}
 
 		if gp.preemptStop {
+			// 如果当前 Goroutine 被 runtime.suspendG 函数挂起，调用 runtime.preemptPark 被动让出当前处理器的控制权并将 Goroutine 的状态修改至 _Gpreempted
 			preemptPark(gp) // never returns
 		}
 
 		// Act like goroutine called runtime.Gosched.
+		// 调用 runtime.gopreempt_m 主动让出当前处理器的控制权；
 		gopreempt_m(gp) // never return
 	}
 
+	// 如果当前 Goroutine 不需要被抢占，意味着我们需要新的栈空间来支持函数调用和本地变量的初始化，运行时会先检查目标大小的栈是否会溢出
 	// Allocate a bigger segment and move the stack.
 	oldsize := gp.stack.hi - gp.stack.lo
 	newsize := oldsize * 2
@@ -1107,6 +1139,8 @@ func newstack() {
 
 	// The concurrent GC will not scan the stack while we are doing the copy since
 	// the gp is in a Gcopystack status.
+	// 如果目标栈的大小没有超出程序的限制，我们会将 Goroutine 切换至 _Gcopystack 状态并调用
+	// runtime.copystack 开始栈拷贝。在拷贝栈内存之前，运行时会通过 runtime.stackalloc 分配新的栈空间
 	copystack(gp, newsize)
 	if stackDebug >= 1 {
 		print("stack grow done\n")
@@ -1151,6 +1185,7 @@ func isShrinkStackSafe(gp *g) bool {
 	return gp.syscallsp == 0 && !gp.asyncSafePoint && atomic.Load8(&gp.parkingOnChan) == 0
 }
 
+// 栈缩容
 // Maybe shrink the stack being used by gp.
 //
 // gp must be stopped and we must own its stack. It may be in
@@ -1188,6 +1223,9 @@ func shrinkstack(gp *g) {
 		return
 	}
 
+	// 如果要触发栈的缩容，新栈的大小会是原始栈的一半，不过如果新栈的大小低于程序的最低限制 2KB，那么缩容的过程就会停止
+	// https://img.draveness.me/2020-03-23-15849514795902-shrink-stacks.png
+	// 运行时只会在栈内存使用不足 1/4 时进行缩容，缩容也会调用扩容时使用的 runtime.copystack 开辟新的栈空间。
 	oldsize := gp.stack.hi - gp.stack.lo
 	newsize := oldsize / 2
 	// Don't shrink the allocation below the minimum-sized stack

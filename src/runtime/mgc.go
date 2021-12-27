@@ -677,7 +677,7 @@ func gcStart(trigger gcTrigger) {
 	// In gcstoptheworld debug mode, upgrade the mode accordingly.
 	// We do this after re-checking the transition condition so
 	// that multiple goroutines that detect the heap trigger don't
-	// start multiple STW GCs.
+	// start multiple STW GCs.s
 	mode := gcBackgroundMode
 	if debug.gcstoptheworld == 1 {
 		mode = gcForceMode

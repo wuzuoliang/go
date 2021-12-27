@@ -43,6 +43,9 @@ type mcache struct {
 
 	alloc [numSpanClasses]*mspan // spans to allocate from, indexed by spanClass
 
+	// 从调度器和内存分配的经验来看，如果运行时只使用全局变量来分配内存的话，
+	// 势必会造成线程之间的锁竞争进而影响程序的执行效率，栈内存由于与线程关系比较密切，
+	// 所以在每一个线程缓存 runtime.mcache 中都加入了栈缓存减少锁竞争影响
 	stackcache [_NumStackOrders]stackfreelist
 
 	// flushGen indicates the sweepgen during which this mcache
