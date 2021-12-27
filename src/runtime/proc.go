@@ -141,8 +141,29 @@ var runtimeInitTime int64
 // Value to use for signal mask for newly created M's.
 var initSigmask sigset
 
+/**
+主 Goroutine 的一生
+runtime.main函数主要工作流程如下：
+
+启动一个sysmon系统监控线程，该线程负责整个程序的gc、抢占调度以及netpoll等功能的监控
+
+执行runtime包的初始化；
+
+执行main包以及main包import的所有包的初始化；
+
+执行main.main函数；
+
+从main.main函数返回后调用exit系统调用退出进程；
+*/
 // The main goroutine.
 func main() {
+	/**
+	systemstack 会运行 newm(sysmon, nil) 启动后台监控
+	runtime_init 负责执行运行时的多个初始化函数 runtime.init
+	gcenable 启用垃圾回收器
+	main_init 开始执行用户态 main.init 函数，这意味着所有的 main.init 均在同一个主 Goroutine 中执行
+	main_main 开始执行用户态 main.main 函数，这意味着 main.main 和 main.init 均在同一个 Goroutine 中执行
+	*/
 	g := getg()
 
 	// Racectx of m0->g0 is used only as the parent of the main goroutine.
@@ -152,6 +173,7 @@ func main() {
 	// Max stack size is 1 GB on 64-bit, 250 MB on 32-bit.
 	// Using decimal instead of binary GB and MB because
 	// they look nicer in the stack overflow failure message.
+	// 执行栈最大限制：1GB（64位系统）或者 250MB（32位系统）
 	if goarch.PtrSize == 8 {
 		maxstacksize = 1000000000
 	} else {
@@ -171,7 +193,10 @@ func main() {
 		// register sysmon is not ready for the world to be
 		// stopped.
 		atomic.Store(&sched.sysmonStarting, 1)
+		// 启动系统后台监控（定期垃圾回收、抢占调度等等）
+		// 现在执行的是main goroutine，所以使用的是main goroutine的栈，需要切换到g0栈去执行newm()
 		systemstack(func() {
+			// 先newm创建一个线程，再让该线程去执行系统监控
 			newm(sysmon, nil, -1)
 		})
 	}
@@ -200,7 +225,7 @@ func main() {
 		inittrace.id = getg().goid
 		inittrace.active = true
 	}
-
+	// 执行 runtime.init。运行时包中有多个 init 函数，编译器会将他们链接起来。
 	doInit(&runtime_inittask) // Must be before defer.
 
 	// Defer unlock so that runtime.Goexit during init does the unlock too.
@@ -235,7 +260,8 @@ func main() {
 		startTemplateThread()
 		cgocall(_cgo_notify_runtime_init_done, nil)
 	}
-
+	// 执行用户 main 包中的 init 函数，因为链接器设定运行时不知道 main 包的地址，处理为非间接调用
+	//         //main 包的初始化函数，也是由编译器实现，会递归的调用我们import进来的包的初始化函数
 	doInit(&main_inittask)
 
 	// Disable init tracing after main init done to avoid overhead
@@ -252,6 +278,7 @@ func main() {
 		// has a main, but it is not executed.
 		return
 	}
+	// 执行用户 main 包中的 main 函数，同理
 	fn := main_main // make an indirect call, as the linker doesn't know the address of the main package when laying down the runtime
 	fn()
 	if raceenabled {
@@ -274,12 +301,20 @@ func main() {
 	if atomic.Load(&panicking) != 0 {
 		gopark(nil, nil, waitReasonPanicWait, traceEvGoStop, 1)
 	}
-
+	// 进入系统调用，退出进程，可以看出main goroutine并未返回，而是直接进入系统调用退出进程了
 	exit(0)
+	// 保护性代码，如果exit意外返回，下面的代码也会让该进程crash死掉
 	for {
 		var x *int32
 		*x = 0
 	}
+	/**
+	runtime.main执行完main包的main函数之后就直接调用exit系统调用结束进程了，它并没有返回到调用它的函数（还记得是从哪里开始执行的runtime.main吗？），
+	其实runtime.main是main goroutine的入口函数，并不是直接被调用的，而是在schedule()->execute()->gogo()这个调用链的gogo函数中用汇编代码直接跳转过来的，所以从这个角度来说，
+	goroutine确实不应该返回，没有地方可返回啊！可是从前面的分析中我们得知，在创建goroutine的时候已经在其栈上放好了一个返回地址，
+	伪造成goexit函数调用了goroutine的入口函数，这里怎么没有用到这个返回地址啊？其实那是为非main goroutine准备的，
+	非main goroutine执行完成后就会返回到goexit继续执行，而main goroutine执行完成后整个进程就结束了，这是main goroutine与其它goroutine的一个区别。
+	*/
 }
 
 // os_beforeExit is called from os.Exit(0).
@@ -318,7 +353,8 @@ func forcegchelper() {
 }
 
 //go:nosplit
-
+// schedule 协作式调度,主动让出处理器
+// runtime.Gosched 函数会主动让出处理器，允许其他 Goroutine 运行。该函数无法挂起 Goroutine，调度器可能会将当前 Goroutine 调度到其他线程上
 // Gosched yields the processor, allowing other goroutines to run. It does not
 // suspend the current goroutine, so execution resumes automatically.
 func Gosched() {
@@ -350,6 +386,9 @@ func goschedguarded() {
 // Reason explains why the goroutine has been parked. It is displayed in stack
 // traces and heap dumps. Reasons should be unique and descriptive. Do not
 // re-use reasons, add new ones.
+// schedule 主动挂起 runtime.gopark -> runtime.park_m
+// runtime.gopark 是触发调度最常见的方法，该函数会将当前 Goroutine 暂停，被暂停的任务不会放回运行队列
+// chan 、select、netpoll、gc、time、signal
 func gopark(unlockf func(*g, unsafe.Pointer) bool, lock unsafe.Pointer, reason waitReason, traceEv byte, traceskip int) {
 	if reason != waitReasonSleep {
 		checkTimeouts() // timeouts may expire while two goroutines keep the scheduler busy
@@ -367,6 +406,7 @@ func gopark(unlockf func(*g, unsafe.Pointer) bool, lock unsafe.Pointer, reason w
 	mp.waittraceskip = traceskip
 	releasem(mp)
 	// can't do anything that might move the G between Ms here.
+	// 上述会通过 runtime.mcall 切换到 g0 的栈上调用 runtime.park_m：
 	mcall(park_m)
 }
 
@@ -1362,8 +1402,13 @@ func mStackIsSystemAllocated() bool {
 	return false
 }
 
-// mstart is the entry-point for new Ms.
+// schedule mstart 线程启动调度循环
+// 调度器启动之后，Go 语言运行时会调用 runtime.mstart 以及 runtime.mstart1，
+// 前者会初始化 g0 的 stackguard0 和 stackguard1 字段，后者会初始化线程并调用 runtime.schedule 进入调度循环：
+// is the entry-point for new Ms.
 // It is written in assembly, uses ABI0, is marked TOPFRAME, and calls mstart0.
+// 开始启动调度器的调度循环,mstart 应该永不返回
+// mstart->mstart0->mstart1->schedule
 func mstart()
 
 // mstart0 is the Go entry-point for new Ms.
@@ -1376,10 +1421,20 @@ func mstart()
 //go:nosplit
 //go:nowritebarrierrec
 func mstart0() {
-	_g_ := getg()
+	/**
+	初始化中 G 的栈边界是还没有初始化的。 因此我们必须在开始前计算栈边界，因此在 mstart1 之前，就是一些确定执行栈边界的工作。
+	当 mstart1 结束后，会执行 mexit 退出 M。mstart 也是所有新创建的 M 的起点。
+	*/
+	_g_ := getg() //_g_ = g0
 
+	// 终于开始确定执行栈的边界了
+	// 通过检查 g 执行占的边界来确定是否为系统栈
+	// 对于启动过程来说，g0的stack.lo早已完成初始化，所以onStack = false
 	osStack := _g_.stack.lo == 0
 	if osStack {
+		// 根据系统栈初始化执行栈的边界
+		// cgo 可能会离开 stack.hi
+		// minit 可能会更新栈的边界
 		// Initialize stack bounds from system stack.
 		// Cgo may have left stack size in stack.hi.
 		// minit may update the stack bounds.
@@ -1397,6 +1452,7 @@ func mstart0() {
 	}
 	// Initialize stack guard so that we can start calling regular
 	// Go code.
+	// 初始化栈 guard，进而可以同时调用 Go 或 C 函数。
 	_g_.stackguard0 = _g_.stack.lo + _StackGuard
 	// This is the g0, so we can also call go:systemstack
 	// functions, which check stackguard1.
@@ -1408,8 +1464,16 @@ func mstart0() {
 		// Windows, Solaris, illumos, Darwin, AIX and Plan 9 always system-allocate
 		// the stack, but put it in _g_.stack before mstart,
 		// so the logic above hasn't set osStack yet.
+		// 由于 windows, solaris, darwin, aix 和 plan9 总是系统分配的栈，在在 mstart 之前放进 _g_.stack 的
+		// 因此上面的逻辑还没有设置 osStack。
 		osStack = true
 	}
+	/**
+	mstart 除了在程序引导阶段会被运行之外，也可能在每个 m 被创建时运行；
+	mstart 进入 mstart1 之后，会初始化自身用于信号处理的 g，在 mstartfn 指定时将其执行；
+	调度循环 schedule 无法返回，因此最后一个 mexit 目前还不会被执行，因此当下所有的 Go 程序创建的线程都无法被释放
+	（只有一个特例，当使用 runtime.LockOSThread 锁住的 G 退出时会使用 gogo 退出 M
+	*/
 	mexit(osStack)
 }
 
@@ -1429,28 +1493,36 @@ func mstart1() {
 	// so other calls can reuse the current frame.
 	// And goexit0 does a gogo that needs to return from mstart1
 	// and let mstart0 exit the thread.
+	// 为了在 mcall 的栈顶使用调用方来结束当前线程，做记录
+	// 当进入 schedule 之后，我们再也不会回到 mstart1，所以其他调用可以复用当前帧。
+	// https://img2018.cnblogs.com/blog/1671650/201905/1671650-20190509152704722-1766773488.png
 	_g_.sched.g = guintptr(unsafe.Pointer(_g_))
-	_g_.sched.pc = getcallerpc()
-	_g_.sched.sp = getcallersp()
-
-	asminit()
-	minit()
+	_g_.sched.pc = getcallerpc() //getcallerpc()获取mstart1执行完的返回地址
+	_g_.sched.sp = getcallersp() //getcallersp()获取调用mstart1时的栈顶地址
+	asminit()                    //在AMD64 Linux平台中，这个函数什么也没做，是个空函数
+	minit()                      //与信号相关的初始化
 
 	// Install signal handlers; after minit so that minit can
 	// prepare the thread to be able to handle the signals.
-	if _g_.m == &m0 {
-		mstartm0()
+	// 设置信号 handler；在 minit 之后，因为 minit 可以准备处理信号的的线程
+	if _g_.m == &m0 { //启动时_g_.m是m0，所以会执行下面的mstartm0函数
+		mstartm0() //也是信号相关的初始化
 	}
 
-	if fn := _g_.m.mstartfn; fn != nil {
+	// 执行启动函数
+	if fn := _g_.m.mstartfn; fn != nil { //初始化过程中fn == nil
 		fn()
 	}
 
-	if _g_.m != &m0 {
+	// 如果当前 m 并非 m0，则要求绑定 p
+	if _g_.m != &m0 { // m0已经绑定了allp[0]，不是m0的话还没有p，所以需要获取一个p
+		// 绑定 p
 		acquirep(_g_.m.nextp.ptr())
 		_g_.m.nextp = 0
 	}
-	schedule()
+	// schedule函数永远不会返回
+	// 这些初始化后则调用调度系统的核心函数schedule()完成goroutine的调度，之所以说它是核心，原因在于每次调度goroutine都是从schedule函数开始的
+	schedule() // 调度启动
 }
 
 // mstartm0 implements part of mstart1 that only runs on the m0.
@@ -1477,10 +1549,12 @@ func mstartm0() {
 func mPark() {
 	g := getg()
 	for {
+		// 暂止当前的 M，在此阻塞，直到被唤醒
 		notesleep(&g.m.park)
 		// Note, because of signal handling by this parked m,
 		// a preemptive mDoFixup() may actually occur via
 		// mDoFixupAndOSYield(). (See golang.org/issue/44193)
+		// 清除暂止的 note
 		noteclear(&g.m.park)
 		if !mDoFixup() {
 			return
@@ -1496,6 +1570,13 @@ func mPark() {
 //
 // It is entered with m.p != nil, so write barriers are allowed. It
 // will release the P before exiting.
+// mexit 销毁并退出当前线程
+//
+// 请不要直接调用来退出线程，因为它必须在线程栈顶上运行。
+// 相反，请使用 gogo(&_g_.m.g0.sched) 来解除栈并退出线程。
+//
+// 当调用时，m.p != nil。因此可以使用 write barrier。
+// 在退出前它会释放当前绑定的 P。
 //
 //go:yeswritebarrierrec
 func mexit(osStack bool) {
@@ -1514,6 +1595,14 @@ func mexit(osStack bool) {
 		//
 		// We could try to clean up this M more before wedging
 		// it, but that complicates signal handling.
+		// 主线程
+		//
+		// 在 linux 中，退出主线程会导致进程变为僵尸进程。
+		// 在 plan 9 中，退出主线程将取消阻塞等待，即使其他线程仍在运行。
+		// 在 Solaris 中我们既不能 exitThread 也不能返回到 mstart 中。
+		// 其他系统上可能发生别的糟糕的事情。
+		//
+		// 我们可以尝试退出之前清理当前 M ，但信号处理非常复杂
 		handoffp(releasep())
 		lock(&sched.lock)
 		sched.nmfreed++
@@ -1528,6 +1617,7 @@ func mexit(osStack bool) {
 
 	// Free the gsignal stack.
 	if m.gsignal != nil {
+		// 释放 gsignal 栈
 		stackfree(m.gsignal.stack)
 		// On some platforms, when calling into VDSO (e.g. nanotime)
 		// we store our g on the gsignal stack, if there is one.
@@ -1537,6 +1627,7 @@ func mexit(osStack bool) {
 	}
 
 	// Remove m from allm.
+	// 将 m 从 allm 中移除
 	lock(&sched.lock)
 	for pprev := &allm; *pprev != nil; pprev = &(*pprev).alllink {
 		if *pprev == m {
@@ -2707,17 +2798,22 @@ func gcstopm() {
 //
 // Write barriers are allowed because this is called immediately after
 // acquiring a P in several places.
-//
+// 在当前 M 上调度 gp。
+// 如果 inheritTime 为 true，则 gp 继承剩余的时间片。否则从一个新的时间片开始
+// 永不返回。
 //go:yeswritebarrierrec
 func execute(gp *g, inheritTime bool) {
 	_g_ := getg()
 
 	// Assign gp.m before entering _Grunning so running Gs have an
 	// M.
+	// 把g和m关联起来,这样通过m就可以找到当前工作线程正在执行哪个goroutine，反之亦然
 	_g_.m.curg = gp
 	gp.m = _g_.m
+	// 将 g 正式切换为 _Grunning 状态
 	casgstatus(gp, _Grunnable, _Grunning)
 	gp.waitsince = 0
+	// 抢占信号
 	gp.preempt = false
 	gp.stackguard0 = gp.stack.lo + _StackGuard
 	if !inheritTime {
@@ -2738,21 +2834,64 @@ func execute(gp *g, inheritTime bool) {
 		}
 		traceGoStart()
 	}
-
+	/**
+	从 runtime.gobuf 中取出了 runtime.goexit 的程序计数器和待执行函数的程序计数器，其中：
+	runtime.goexit 的程序计数器被放到了栈 SP 上；
+	待执行函数的程序计数器被放到了寄存器 BX 上；
+	CPU执行权的转让以及栈的切换。
+	*/
 	gogo(&gp.sched)
+	/**
+	当 Goroutine 中运行的函数返回时，程序会跳转到 runtime.goexit 所在位置执行该函数 ,goexit0(gp *g)
+	TEXT runtime·goexit(SB),NOSPLIT,$0-0
+		CALL	runtime·goexit1(SB)
+
+	func goexit1() {
+		mcall(goexit0)
+	}
+	*/
 }
 
 // Finds a runnable goroutine to execute.
 // Tries to steal from other P's, get g from local or global queue, poll network.
 func findrunnable() (gp *g, inheritTime bool) {
+	/**
+	从本地运行队列、全局运行队列中查找；
+	从网络轮询器中查找是否有 Goroutine 等待运行；
+	通过 runtime.runqsteal 尝试从其他随机的处理器中窃取待运行的 Goroutine，该函数还可能窃取处理器的计时器;
+	*/
 	_g_ := getg()
 
 	// The conditions here and in handoffp must agree: if
 	// findrunnable would return a G to run, handoffp must start
 	// an M.
+	// 这里的条件与 handoffp 中的条件必须一致：
+	// 如果 findrunnable 将返回 G 运行，handoffp 必须启动 M.
 
+	/**
+	在 findrunnable 这个过程中，我们：
+
+	首先检查是是否正在进行 GC，如果是则暂止当前的 m 并阻塞休眠；
+	尝试从本地队列中取 g，如果取到，则直接返回，否则继续从全局队列中找 g，如果找到则直接返回；
+	检查是否存在 poll 网络的 g，如果有，则直接返回；
+	如果此时仍然无法找到 g，则从其他 P 的本地队列中偷取；
+	从其他 P 本地队列偷取的工作会执行四轮，在前两轮中只会查找 runnable 队列，后两轮则会优先查找 ready 队列，如果找到，则直接返回；
+	所有的可能性都尝试过了，在准备暂止 m 之前，还要进行额外的检查；
+	首先检查此时是否是 GC mark 阶段，如果是，则直接返回 mark 阶段的 g；
+	如果仍然没有，则对当前的 p 进行快照，准备对调度器进行加锁；
+	当调度器被锁住后，我们仍然还需再次检查这段时间里是否有进入 GC，如果已经进入了 GC，则回到第一步，阻塞 m 并休眠；
+	当调度器被锁住后，如果我们又在全局队列中发现了 g，则直接返回；
+	当调度器被锁住后，我们彻底找不到任务了，则归还释放当前的 P，将其放入 idle 链表中，并解锁调度器；
+	当 M/P 已经解绑后，我们需要将 m 的状态切换出自旋状态，并减少 nmspinning；
+	此时我们仍然需要重新检查所有的队列；
+	如果此时我们发现有一个 P 队列不空，则立刻尝试获取一个 P，如果获取到，则回到第一步，重新执行偷取工作，如果取不到，则说明系统已经满载，无需继续进行调度；
+	同样，我们还需要再检查是否有 GC mark 的 g 出现，如果有，获取 P 并回到第一步，重新执行偷取工作；
+	同样，我们还需要再检查是否存在 poll 网络的 g，如果有，则直接返回；
+	终于，我们什么也没找到，暂止当前的 m 并阻塞休眠。
+	*/
 top:
 	_p_ := _g_.m.p.ptr()
+	// 如果在 gc，则暂止当前 m，直到复始后回到 top
 	if sched.gcwaiting != 0 {
 		gcstopm()
 		goto top
@@ -2760,7 +2899,7 @@ top:
 	if _p_.runSafePointFn != 0 {
 		runSafePointFn()
 	}
-
+	// 检查 P 中可执行的 timer
 	now, pollUntil, _ := checkTimers(_p_, 0)
 
 	if fingwait && fingwake {
@@ -2768,16 +2907,19 @@ top:
 			ready(gp, 0, true)
 		}
 	}
+	// cgo 调用被终止，继续进入
 	if *cgo_yield != nil {
 		asmcgocall(*cgo_yield, nil)
 	}
 
 	// local runq
+	// 取本地队列 local runq，如果已经拿到，立刻返回
 	if gp, inheritTime := runqget(_p_); gp != nil {
 		return gp, inheritTime
 	}
 
 	// global runq
+	// 全局队列 global runq，如果已经拿到，立刻返回
 	if sched.runqsize != 0 {
 		lock(&sched.lock)
 		gp := globrunqget(_p_, 0)
@@ -2794,9 +2936,16 @@ top:
 	// blocked thread (e.g. it has already returned from netpoll, but does
 	// not set lastpoll yet), this thread will do blocking netpoll below
 	// anyway.
+	// Poll 网络，优先级比从其他 P 中偷要高。
+	// 在我们尝试去其他 P 偷之前，这个 netpoll 只是一个优化。
+	// 如果没有 waiter 或 netpoll 中的线程已被阻塞，则可以安全地跳过它。
+	// 如果有任何类型的逻辑竞争与被阻塞的线程（例如它已经从 netpoll 返回，但尚未设置 lastpoll）
+	// 该线程无论如何都将阻塞 netpoll。
 	if netpollinited() && atomic.Load(&netpollWaiters) > 0 && atomic.Load64(&sched.lastpoll) != 0 {
+		// 尝试从netpoller获取Glist
 		if list := netpoll(0); !list.empty() { // non-blocking
 			gp := list.pop()
+			//将其余队列放入 P 的可运行G队列
 			injectglist(&list)
 			casgstatus(gp, _Gwaiting, _Grunnable)
 			if trace.enabled {
@@ -2811,13 +2960,14 @@ top:
 	// Limit the number of spinning Ms to half the number of busy Ps.
 	// This is necessary to prevent excessive CPU consumption when
 	// GOMAXPROCS>>1 but the program parallelism is low.
+	// 从其他 P 中偷 work
 	procs := uint32(gomaxprocs)
 	if _g_.m.spinning || 2*atomic.Load(&sched.nmspinning) < procs-atomic.Load(&sched.npidle) {
 		if !_g_.m.spinning {
 			_g_.m.spinning = true
 			atomic.Xadd(&sched.nmspinning, 1)
 		}
-
+		// 窃取时候增加了随机数，防止每次遍历时使用同样的顺序访问allp中的元素
 		gp, inheritTime, tnow, w, newWork := stealWork(now)
 		now = tnow
 		if gp != nil {
@@ -2891,9 +3041,11 @@ top:
 		unlock(&sched.lock)
 		return gp, false
 	}
+	// 当前工作线程解除与p之间的绑定，准备去休眠
 	if releasep() != _p_ {
 		throw("findrunnable: wrong p")
 	}
+	//把p放入空闲队列
 	pidleput(_p_)
 	unlock(&sched.lock)
 
@@ -3329,6 +3481,35 @@ func injectglist(glist *gList) {
 	}
 }
 
+/**
+抢占式调度器
+Go 语言的调度器在 1.2 中引入基于协作的抢占式调度解决下面的问题：
+某些 Goroutine 可以长时间占用线程，造成其它 Goroutine 的饥饿；
+垃圾回收需要暂停整个程序（Stop-the-world，STW），最长可能需要几分钟的时间，导致整个程序无法工作；
+抢占式调度虽然能够缓解这个问题，但是它实现的抢占式调度是基于协作的，在之后很长的一段时间里 Go 语言的调度器都有一些无法被抢占的边缘情况，例如：for 循环或者垃圾回收长时间占用线程
+
+基于协作的抢占式调度
+编译器会在调用函数前插入 runtime.morestack；
+Go 语言运行时会在垃圾回收暂停程序、系统监控发现 Goroutine 运行超过 10ms 时发出抢占请求 StackPreempt；
+当发生函数调用时，可能会执行编译器插入的 runtime.morestack，它调用的 runtime.newstack 会检查 Goroutine 的 stackguard0 字段是否为 StackPreempt；
+如果 stackguard0 是 StackPreempt，就会触发抢占让出当前线程；
+这里的抢占是通过编译器插入函数实现的，还是需要函数调用作为入口才能触发抢占，所以这是一种协作式的抢占式调度
+
+基于信号的抢占式调度
+Go 语言在 1.14 版本中实现了非协作的抢占式调度，在实现的过程中我们重构已有的逻辑并为 Goroutine 增加新的状态和字段来支持抢占。
+程序启动时，在 runtime.sighandler 中注册 SIGURG 信号的处理函数 runtime.doSigPreempt；
+在触发垃圾回收的栈扫描时会调用 runtime.suspendG 挂起 Goroutine，该函数会执行下面的逻辑：
+将 _Grunning 状态的 Goroutine 标记成可以被抢占，即将 preemptStop 设置成 true；
+调用 runtime.preemptM 触发抢占；
+runtime.preemptM 会调用 runtime.signalM 向线程发送信号 SIGURG；
+操作系统会中断正在运行的线程并执行预先注册的信号处理函数 runtime.doSigPreempt；
+runtime.doSigPreempt 函数会处理抢占信号，获取当前的 SP 和 PC 寄存器并调用 runtime.sigctxt.pushCall；
+runtime.sigctxt.pushCall 会修改寄存器并在程序回到用户态时执行 runtime.asyncPreempt；
+汇编指令 runtime.asyncPreempt 会调用运行时函数 runtime.asyncPreempt2；
+runtime.asyncPreempt2 会调用 runtime.preemptPark；
+runtime.preemptPark 会修改当前 Goroutine 的状态到 _Gpreempted 并调用 runtime.schedule 让当前函数陷入休眠并让出线程，调度器会选择其它的 Goroutine 继续执行；
+*/
+
 // schedule() 触发调度的机制
 // https://img.draveness.me/2020-02-05-15808864354679-schedule-points.png
 // 调度器调度循环纵览 https://golang.design/under-the-hood/assets/schedule.png
@@ -3508,10 +3689,17 @@ func dropg() {
 // If the time when the next timer should run is not 0,
 // it is always larger than the returned time.
 // We pass now in and out to avoid extra calls of nanotime.
+/**
+检查是否有需要进行调整的 timer， 如果没有需要执行的计时器时，直接返回；如果下一个要执行的 timer 没有到期并且需要删除的计时器较少（四分之一）时也会直接返回；
+调用 adjusttimers 进行 timer 列表的调整，主要是维护 timer 列表的最小堆的顺序；
+调用 runtime.runtimer查找堆中是否存在需要执行的timer， runtime.runtimer上面已经讲过了，这里不再赘述；
+如果当前 Goroutine 的 P 和传入的 P 相同，并且需要删除的 timer 超过了 timer 列表数量的四分之一，那么调用 clearDeletedTimers 清理需要删除的 timer；
+*/
 //go:yeswritebarrierrec
 func checkTimers(pp *p, now int64) (rnow, pollUntil int64, ran bool) {
 	// If it's not yet time for the first timer, or the first adjusted
 	// timer, then there is nothing to do.
+	// 获取 timer0 的执行时间
 	next := int64(atomic.Load64(&pp.timer0When))
 	nextAdj := int64(atomic.Load64(&pp.timerModifiedEarliest))
 	if next == 0 || (nextAdj != 0 && nextAdj < next) {
@@ -3526,11 +3714,13 @@ func checkTimers(pp *p, now int64) (rnow, pollUntil int64, ran bool) {
 	if now == 0 {
 		now = nanotime()
 	}
+	// 下次执行大于当前时间
 	if now < next {
 		// Next timer is not ready to run, but keep going
 		// if we would clear deleted timers.
 		// This corresponds to the condition below where
 		// we decide whether to call clearDeletedTimers.
+		// 需要删除的 timer 个数小于 timer列表个数的4分之1，直接返回
 		if pp != getg().m.p.ptr() || int(atomic.Load(&pp.deletedTimers)) <= int(atomic.Load(&pp.numTimers)/4) {
 			return now, next, false
 		}
@@ -3539,10 +3729,12 @@ func checkTimers(pp *p, now int64) (rnow, pollUntil int64, ran bool) {
 	lock(&pp.timersLock)
 
 	if len(pp.timers) > 0 {
+		// 进行调整 timer
 		adjusttimers(pp, now)
 		for len(pp.timers) > 0 {
 			// Note that runtimer may temporarily unlock
 			// pp.timersLock.
+			// 查找堆中是否存在需要执行的 timer
 			if tw := runtimer(pp, now); tw != 0 {
 				if tw > 0 {
 					pollUntil = tw
@@ -3556,6 +3748,7 @@ func checkTimers(pp *p, now int64) (rnow, pollUntil int64, ran bool) {
 	// If this is the local P, and there are a lot of deleted timers,
 	// clear them out. We only do this for the local P to reduce
 	// lock contention on timersLock.
+	// 如果需要删除的 timer 超过了 timer 列表数量的四分之一，那么清理需要删除的 timer
 	if pp == getg().m.p.ptr() && int(atomic.Load(&pp.deletedTimers)) > len(pp.timers)/4 {
 		clearDeletedTimers(pp)
 	}
@@ -3577,7 +3770,8 @@ func park_m(gp *g) {
 	if trace.enabled {
 		traceGoPark(_g_.m.waittraceev, _g_.m.waittraceskip)
 	}
-
+	// runtime.park_m 会将当前 Goroutine 的状态从 _Grunning 切换至 _Gwaiting，
+	// 调用 runtime.dropg 移除线程和 Goroutine 之间的关联
 	casgstatus(gp, _Grunning, _Gwaiting)
 	dropg()
 
@@ -3589,26 +3783,31 @@ func park_m(gp *g) {
 			if trace.enabled {
 				traceGoUnpark(gp, 2)
 			}
+			// runtime.ready 会将准备就绪的 Goroutine 的状态切换至 _Grunnable 并将其加入处理器的运行队列中，等待调度器的调度。
 			casgstatus(gp, _Gwaiting, _Grunnable)
 			execute(gp, true) // Schedule it back, never returns.
 		}
 	}
-	schedule()
+	// 在这之后就可以调用 runtime.schedule 触发新一轮的调度了。
+	schedule() // 主动挂起调度
 }
 
 func goschedImpl(gp *g) {
+	// 经过连续几次跳转，我们最终在 g0 的栈上调用 runtime.goschedImpl，
+	// 运行时会更新 Goroutine 的状态到 _Grunnable，让出当前的处理器并将 Goroutine 重新放回全局队列，在最后，该函数会调用 runtime.schedule 触发调度
 	status := readgstatus(gp)
 	if status&^_Gscan != _Grunning {
 		dumpgstatus(gp)
 		throw("bad g status")
 	}
 	casgstatus(gp, _Grunning, _Grunnable)
-	dropg()
+	dropg() //设置当前m.curg = nil, gp.m = nil
 	lock(&sched.lock)
-	globrunqput(gp)
+	globrunqput(gp) //把gp放入sched的全局运行队列runq
 	unlock(&sched.lock)
 
-	schedule()
+	schedule() // 进入新一轮调度
+	// https://img2018.cnblogs.com/blog/1671650/201905/1671650-20190528163903984-740942027.png
 }
 
 // Gosched continuation on g0.
@@ -3706,9 +3905,29 @@ func goexit1() {
 	if trace.enabled {
 		traceGoEnd()
 	}
+	// mcall的参数是一个函数，在Go语言的实现中，函数变量并不是一个直接指向函数代码的指针，而是一个指向funcval结构体对象的指针，funcval结构体对象的第一个成员fn才是真正指向函数代码的指针。
 	mcall(goexit0)
+	/**
+	mcall函数主要有两个功能：
+
+	首先从当前运行的g(我们这个场景是g2)切换到g0，这一步包括保存当前g的调度信息，把g0设置到tls中，修改CPU的rsp寄存器使其指向g0的栈；
+
+	以当前运行的g(我们这个场景是g2)为参数调用fn函数(此处为goexit0)。
+
+	从mcall的功能我们可以看出，mcall做的事情跟gogo函数完全相反，gogo函数实现了从g0切换到某个goroutine去运行，而mcall实现了从某个goroutine切换到g0来运行，因此，mcall和gogo的代码非常相似，然而mcall和gogo在做切换时有个重要的区别：gogo函数在从g0切换到其它goroutine时首先切换了栈，然后通过跳转指令从runtime代码切换到了用户goroutine的代码，而mcall函数在从其它goroutine切换回g0时只切换了栈，并未使用跳转指令跳转到runtime代码去执行。为什么会有这个差别呢？原因在于在从g0切换到其它goroutine之前执行的是runtime的代码而且使用的是g0栈，所以切换时需要首先切换栈然后再从runtime代码跳转某个goroutine的代码去执行（切换栈和跳转指令不能颠倒，因为跳转之后执行的就是用户的goroutine代码了，没有机会切换栈了），然而从某个goroutine切换回g0时，goroutine使用的是call指令来调用mcall函数，mcall函数本身就是runtime的代码，所以call指令其实已经完成了从goroutine代码到runtime代码的跳转，因此mcall函数自身的代码就不需要再跳转了，只需要把栈切换到g0栈即可。
+
+	因为mcall跟gogo非常相似，前面我们对gogo的每一条指令已经做过详细的分析，所以这里就不再详细解释mcall的每一条指令了，但笔者在上面所展示的mcall代码中做了一些注释（注释中的g表示当前正在运行的goroutine，我们这个场景g就是g2），这里大家可以结合gogo的代码以及mcall的代码和注释来加深对g0与其它goroutine之间的切换的理解。
+	*/
 }
 
+/**
+经过一系列复杂的函数调用，我们最终在当前线程的 g0 的栈上调用 runtime.goexit0 函数，
+该函数会将 Goroutine 转换会 _Gdead 状态、清理其中的字段、移除 Goroutine 和线程的关联并调用 runtime.gfput
+重新加入处理器的 Goroutine 空闲列表 gFree
+
+由于 mstart/mstart1 是运行在 g0 上的，因此 save 将保存 mstart 的运行现场保存到 g0.sched 中。
+当调度循环执行到 goexit0 时，会检查 m 与 g 之间是否被锁住：
+*/
 // goexit continuation on g0.
 func goexit0(gp *g) {
 	_g_ := getg()
@@ -3737,6 +3956,8 @@ func goexit0(gp *g) {
 		// Flush assist credit to the global pool. This gives
 		// better information to pacing if the application is
 		// rapidly creating an exiting goroutines.
+		// 刷新 assist credit 到全局池。
+		// 如果应用在快速创建 Goroutine，这可以为 pacing 提供更好的信息。
 		assistWorkPerByte := gcController.assistWorkPerByte.Load()
 		scanCredit := int64(assistWorkPerByte * float64(gp.gcAssistBytes))
 		atomic.Xaddint64(&gcController.bgScanCredit, scanCredit)
@@ -3754,6 +3975,7 @@ func goexit0(gp *g) {
 		print("invalid m->lockedInt = ", _g_.m.lockedInt, "\n")
 		throw("internal lockOSThread error")
 	}
+	// 放回 p.gFree，如果 p.gFree 达到 64 个，则搬移一半到 sched.gFree
 	gfput(_p_, gp)
 	if locked {
 		// The goroutine may have locked this thread because
@@ -3762,15 +3984,26 @@ func goexit0(gp *g) {
 
 		// Return to mstart, which will release the P and exit
 		// the thread.
+		// 该 Goroutine 可能在当前线程上锁住，因为它可能导致了不正常的内核状态
+		// 这时候 kill 该线程，而非将 m 放回到线程池。
+
+		// 此举会返回到 mstart，从而释放当前的 P 并退出该线程
 		if GOOS != "plan9" { // See golang.org/issue/22227.
+			// 如果 g 锁在当前 m 上，则调用 gogo 恢复到 g0.sched 的执行现场，从而恢复到 mexit 调用。
+
 			gogo(&_g_.m.g0.sched)
 		} else {
 			// Clear lockedExt on plan9 since we may end up re-using
 			// this thread.
+			// 因为我们可能已重用此线程结束，在 plan9 上清除 lockedExt
+
 			_g_.m.lockedExt = 0
 		}
 	}
-	schedule()
+	// 在最后 runtime.goexit0 会重新调用 runtime.schedule 触发新一轮的 Goroutine 调度
+	//，Go 语言中的运行时调度循环会从 runtime.schedule 开始，最终又回到 runtime.schedule，我们可以认为调度循环永远都不会返回
+	// https://img.draveness.me/2020-02-05-15808864354669-golang-scheduler-loop.png
+	schedule() // 退出
 }
 
 // save updates getg().sched to refer to pc and sp so that a following
@@ -3792,7 +4025,7 @@ func save(pc, sp uintptr) {
 		// run in contexts where they'd write to system g's.
 		throw("save on system g not allowed")
 	}
-
+	// 保存当前运行现场
 	_g_.sched.pc = pc
 	_g_.sched.sp = sp
 	_g_.sched.lr = 0
@@ -3800,6 +4033,8 @@ func save(pc, sp uintptr) {
 	// We need to ensure ctxt is zero, but can't have a write
 	// barrier here. However, it should always already be zero.
 	// Assert that.
+	// 我们必须确保 ctxt 为零，但这里不允许 write barrier。
+	// 所以这里只是做一个断言
 	if _g_.sched.ctxt != nil {
 		badctxt()
 	}
@@ -3847,19 +4082,26 @@ func reentersyscall(pc, sp uintptr) {
 
 	// Disable preemption because during this function g is in Gsyscall status,
 	// but can have inconsistent g->sched, do not let GC observe it.
+	// 禁止线程上发生的抢占，防止出现内存不一致的问题；
+
 	_g_.m.locks++
 
 	// Entersyscall must not call any function that might split/grow the stack.
 	// (See details in comment above.)
 	// Catch calls that might, by replacing the stack guard with something that
 	// will trip any stack check and leaving a flag to tell newstack to die.
+	// 保证当前函数不会触发栈分裂或者增长；
+
 	_g_.stackguard0 = stackPreempt
 	_g_.throwsplit = true
 
 	// Leave SP around for GC and traceback.
+	// 保存当前的程序计数器 PC 和栈指针 SP 中的内容；
+	// 保存堆栈指针 sp 和程序计数器 pc 到 g.sched 中
 	save(pc, sp)
 	_g_.syscallsp = sp
 	_g_.syscallpc = pc
+	// 将 Goroutine 的状态更新至 _Gsyscall
 	casgstatus(_g_, _Grunning, _Gsyscall)
 	if _g_.syscallsp < _g_.stack.lo || _g_.stack.hi < _g_.syscallsp {
 		systemstack(func() {
@@ -3873,9 +4115,10 @@ func reentersyscall(pc, sp uintptr) {
 		// systemstack itself clobbers g.sched.{pc,sp} and we might
 		// need them later when the G is genuinely blocked in a
 		// syscall
+		// systemstack 会修改 g.sched，所以需要重新保存
 		save(pc, sp)
 	}
-
+	// 确保 sysmon 监控线程运行，因为它负责将因系统调用而长时间阻塞的 P 抢走，用于执行其它任务
 	if atomic.Load(&sched.sysmonwait) != 0 {
 		systemstack(entersyscall_sysmon)
 		save(pc, sp)
@@ -3893,11 +4136,14 @@ func reentersyscall(pc, sp uintptr) {
 	pp.m = 0
 	_g_.m.oldp.set(pp)
 	_g_.m.p = 0
+	// 	将 Goroutine 的处理器和线程暂时分离并更新处理器的状态到 _Psyscall；
+
 	atomic.Store(&pp.status, _Psyscall)
 	if sched.gcwaiting != 0 {
 		systemstack(entersyscall_gcwait)
 		save(pc, sp)
 	}
+	// 	释放当前线程上的锁；
 
 	_g_.m.locks--
 }
@@ -3908,6 +4154,16 @@ func reentersyscall(pc, sp uintptr) {
 //
 //go:nosplit
 //go:linkname entersyscall
+// schedule 系统调度准备
+// runtime.entersyscall 会在获取当前程序计数器和栈位置之后调用 runtime.reentersyscall，它会完成 Goroutine 进入系统调用前的准备工作
+// go 中用户代码进入系统调用的入口在src/syscall/syscall_linux.go，该文件中定义了三种类型的系统调用：
+//
+// 阻塞的：注释为 //sys 开头（grep ‘//sys\t’ syscall_linux.go），通过Syscall6或Syscall执行系统调用
+// 非阻塞的：注释为 //sysnb 开头（grep ‘//sysnb\t’ syscall_linux.go），通过RawSyscall6和RawSyscall执行系统调用
+// 封装的：例如 Rename -> RenameAt，主要是对输入参数做一些简化
+// Syscall与RawSyscall的区别在于，Syscall会在系统调用执行前（runtime.entersyscall）和执行后（runtime.exitsyscall）通知 runtime。
+//
+// runtime.entersyscall会导致 p 与 m 分离，释放 p，使得 p 可以被 sysmon 系统监控线程抢走，并被其他 m 使用：
 func entersyscall() {
 	reentersyscall(getcallerpc(), getcallersp())
 }
@@ -4002,7 +4258,23 @@ func entersyscallblock_handoff() {
 //go:nosplit
 //go:nowritebarrierrec
 //go:linkname exitsyscall
+// schedule 系统调用恢复
 func exitsyscall() {
+	/**
+	当系统调用结束后，会调用退出系统调用的函数 runtime.exitsyscall 为当前 Goroutine 重新分配资源，该函数有两个不同的执行路径：
+
+	调用 runtime.exitsyscallfast；
+	切换至调度器的 Goroutine 并调用 runtime.exitsyscall0
+
+	这两种不同的路径会分别通过不同的方法查找一个用于执行当前 Goroutine 处理器 P，快速路径 runtime.exitsyscallfast 中包含两个不同的分支：
+
+	如果 Goroutine 的原处理器处于 _Psyscall 状态，会直接调用 wirep 将 Goroutine 与处理器进行关联；
+	如果调度器中存在闲置的处理器，会调用 runtime.acquirep 使用闲置的处理器处理当前 Goroutine；
+	另一个相对较慢的路径 runtime.exitsyscall0 会将当前 Goroutine 切换至 _Grunnable 状态，并移除线程 M 和当前 Goroutine 的关联：
+
+	当我们通过 runtime.pidleget 获取到闲置的处理器时就会在该处理器上执行 Goroutine；
+	在其它情况下，我们会将当前 Goroutine 放到全局的运行队列中，等待调度器的调度；
+	*/
 	_g_ := getg()
 
 	_g_.m.locks++ // see comment in entersyscall
@@ -4011,7 +4283,7 @@ func exitsyscall() {
 	}
 
 	_g_.waitsince = 0
-	oldp := _g_.m.oldp.ptr()
+	oldp := _g_.m.oldp.ptr() // 获取进入系统调用前使用的 p
 	_g_.m.oldp = 0
 	if exitsyscallfast(oldp) {
 		if trace.enabled {
@@ -4044,6 +4316,7 @@ func exitsyscall() {
 
 		return
 	}
+	// 没找到可用的 P
 
 	_g_.sysexitticks = 0
 	if trace.enabled {
@@ -4062,7 +4335,7 @@ func exitsyscall() {
 	_g_.m.locks--
 
 	// Call the scheduler.
-	mcall(exitsyscall0)
+	mcall(exitsyscall0) // 移除当前 g 与 m 的关联，将当前 g 放到调度器的可执行队列中，并执行调度器的调度操作，即 runtime.schedule 函数
 
 	// Scheduler returned, so we're allowed to run now.
 	// Delete the syscallsp information that we left for
@@ -4079,14 +4352,18 @@ func exitsyscall() {
 func exitsyscallfast(oldp *p) bool {
 	_g_ := getg()
 
+	// 调度器停止调度
 	// Freezetheworld sets stopwait but does not retake P's.
 	if sched.stopwait == freezeStopWait {
 		return false
 	}
+	// oldp 是否还处于 _Psyscall 状态，如果是的话，直接拿来用
 
 	// Try to re-acquire the last P.
 	if oldp != nil && oldp.status == _Psyscall && atomic.Cas(&oldp.status, _Psyscall, _Pidle) {
 		// There's a cpu for us, so we can run.
+		// 可以直接把刚才切换过来的oldp绑定到m上
+
 		wirep(oldp)
 		exitsyscallfast_reacquired()
 		return true
@@ -4096,6 +4373,7 @@ func exitsyscallfast(oldp *p) bool {
 	if sched.pidle != 0 {
 		var ok bool
 		systemstack(func() {
+			// 尝试从调度器的空闲 P 列表中获取
 			ok = exitsyscallfast_pidle()
 			if ok && trace.enabled {
 				if oldp != nil {
@@ -5341,11 +5619,12 @@ var forcegcperiod int64 = 2 * 60 * 1e9
 var needSysmonWorkaround bool = false
 
 // Always runs without a P, so write barriers are not allowed.
-//
+// schedule 系统监控 goroutine 抢占
 //go:nowritebarrierrec
-func sysmon() {
+func sysmon() { // 系统线程
 	lock(&sched.lock)
 	sched.nmsys++
+	// 死锁检查
 	checkdead()
 	unlock(&sched.lock)
 
@@ -5358,6 +5637,11 @@ func sysmon() {
 	delay := uint32(0)
 
 	for {
+		/**
+		初始的休眠时间是 20μs；
+		最长的休眠时间是 10ms；
+		当系统监控在 50 个循环中都没有唤醒 Goroutine 时，休眠时间在每个循环都会倍增
+		*/
 		if idle == 0 { // start with 20us sleep...
 			delay = 20
 		} else if idle > 50 { // start doubling the sleep after 1ms...
@@ -5384,13 +5668,18 @@ func sysmon() {
 		// application starts work again. It does not reset idle when waking
 		// from a timer to avoid adding system load to applications that spend
 		// most of their time sleeping.
+		// 检查定时器
+		// 在系统监控的循环中，我们通过 runtime.nanotime 和 runtime.timeSleepUntil
+		// 获取当前时间和计时器下一次需要唤醒的时间；当前调度器需要执行垃圾回收或者所有处理器都处于闲置状态时，如果没有需要触发的计时器，那么系统监控可以暂时陷入休眠
 		now := nanotime()
 		if debug.schedtrace <= 0 && (sched.gcwaiting != 0 || atomic.Load(&sched.npidle) == uint32(gomaxprocs)) {
 			lock(&sched.lock)
 			if atomic.Load(&sched.gcwaiting) != 0 || atomic.Load(&sched.npidle) == uint32(gomaxprocs) {
 				syscallWake := false
+				// 返回下次需要调度 timer 到期时间
 				next, _ := timeSleepUntil()
 				if next > now {
+					// sysmon 进入休眠
 					atomic.Store(&sched.sysmonwait, 1)
 					unlock(&sched.lock)
 					// Make wake-up period small enough
@@ -5403,13 +5692,16 @@ func sysmon() {
 					if shouldRelax {
 						osRelax(true)
 					}
+					// 使用信号量同步系统监控即将进入休眠的状态
 					syscallWake = notetsleep(&sched.sysmonnote, sleep)
 					mDoFixup()
 					if shouldRelax {
 						osRelax(false)
 					}
 					lock(&sched.lock)
+					// sysmon 退出休眠
 					atomic.Store(&sched.sysmonwait, 0)
+					// 通知系统监控被唤醒并重置休眠的间隔。
 					noteclear(&sched.sysmonnote)
 				}
 				if syscallWake {
@@ -5429,11 +5721,14 @@ func sysmon() {
 		if *cgo_yield != nil {
 			asmcgocall(*cgo_yield, nil)
 		}
+		// 轮询网络
 		// poll network if not polled for more than 10ms
+		// 如果上一次轮询网络已经过去了 10ms，那么系统监控还会在循环中轮询网络，检查是否有待执行的文件描述符：
 		lastpoll := int64(atomic.Load64(&sched.lastpoll))
 		if netpollinited() && lastpoll != 0 && lastpoll+10*1000*1000 < now {
 			atomic.Cas64(&sched.lastpoll, uint64(lastpoll), uint64(now))
 			list := netpoll(0) // non-blocking - returns list of goroutines
+			// G 列表不为空
 			if !list.empty() {
 				// Need to decrement number of idle locked M's
 				// (pretending that one more is running) before injectglist.
@@ -5443,6 +5738,7 @@ func sysmon() {
 				// observes that there is no work to do and no other running M's
 				// and reports deadlock.
 				incidlelocked(-1)
+				// 将获取到的 G 列表插入到空闲的 P 中或全局列表中
 				injectglist(&list)
 				incidlelocked(1)
 			}
@@ -5472,6 +5768,9 @@ func sysmon() {
 			// Kick the scavenger awake if someone requested it.
 			wakeScavenger()
 		}
+		// 抢占处理器
+		// 抢夺因为 syscall 而长时间阻塞的 P
+		// 对长时间运行的 G 发起抢占
 		// retake P's blocked in syscalls
 		// and preempt long running G's
 		if retake(now) != 0 {
@@ -5479,6 +5778,7 @@ func sysmon() {
 		} else {
 			idle++
 		}
+		// 垃圾回收
 		// check if we need to force a GC
 		// 系统监控在每个循环中都会主动构建一个 runtime.gcTrigger 并检查垃圾收集的触发条件是否满足，如果满足条件，系统监控会将 runtime.forcegc 状态中持有的 Goroutine 加入全局队列等待调度器的调度。
 		if t := (gcTrigger{kind: gcTriggerTime, now: now}); t.test() && atomic.Load(&forcegc.idle) != 0 {
@@ -5498,10 +5798,10 @@ func sysmon() {
 }
 
 type sysmontick struct {
-	schedtick   uint32
-	schedwhen   int64
-	syscalltick uint32
-	syscallwhen int64
+	schedtick   uint32 // 处理器的调度次数
+	schedwhen   int64  // 处理器上次调度时间
+	syscalltick uint32 // 系统调用的次数
+	syscallwhen int64  // 系统调用的时间
 }
 
 // forcePreemptNS is the time slice given to a G before it is
@@ -5512,10 +5812,12 @@ func retake(now int64) uint32 {
 	n := 0
 	// Prevent allp slice changes. This lock will be completely
 	// uncontended unless we're already stopping the world.
+	// 防止发生变更，对所有 P 加锁
 	lock(&allpLock)
 	// We can't use a range loop over allp because we may
 	// temporarily drop the allpLock. Hence, we need to re-fetch
 	// allp each time around the loop.
+	// 走入主逻辑，对所有 P 开始循环处理
 	for i := 0; i < len(allp); i++ {
 		_p_ := allp[i]
 		if _p_ == nil {
@@ -5528,11 +5830,15 @@ func retake(now int64) uint32 {
 		sysretake := false
 		if s == _Prunning || s == _Psyscall {
 			// Preempt G if it's running for too long.
+			// 如果 G 运行时间过长，则进行抢占
+			// 判断是否超过 1 个 sysmon tick 周期
 			t := int64(_p_.schedtick)
+			// pd 是统计信息
 			if int64(pd.schedtick) != t {
 				pd.schedtick = uint32(t)
 				pd.schedwhen = now
 			} else if pd.schedwhen+forcePreemptNS <= now {
+				// 最近的一次调度，到现在已经超过 10 ms 了，通过 runtime.preemptone 抢占当前处理器
 				preemptone(_p_)
 				// In case of syscall, preemptone() doesn't
 				// work, because there is no M wired to P.
@@ -5540,8 +5846,10 @@ func retake(now int64) uint32 {
 			}
 		}
 		if s == _Psyscall {
+			// 当处理器处于 _Psyscall 状态时，在满足以下两种情况下会调用 runtime.handoffp 让出处理器的使用权
 			// Retake P from syscall if it's there for more than 1 sysmon tick (at least 20us).
 			t := int64(_p_.syscalltick)
+			// 第一个场景是：会对 syscalltick 进行判定，如果在系统调用（syscall）中存在超过 1 个 sysmon tick 周期（至少 20us）的任务，则会从系统调用中抢占 P，否则跳过。
 			if !sysretake && int64(pd.syscalltick) != t {
 				pd.syscalltick = uint32(t)
 				pd.syscallwhen = now
@@ -5550,16 +5858,31 @@ func retake(now int64) uint32 {
 			// On the one hand we don't want to retake Ps if there is no other work to do,
 			// but on the other hand we want to retake them eventually
 			// because they can prevent the sysmon thread from deep sleep.
+			// 当前 P 没有待运行的 G，且存在空闲的 M 或 P，且进入 syscall 状态还不到 10 ms
+			// 不抢夺
+			// runqempty(_p_) == true 方法会判断任务队列 P 是否为空，以此来检测有没有其他任务需要执行。
+			// atomic.Load(&sched.nmspinning)+atomic.Load(&sched.npidle) > 0 会判断是否存在空闲 P 和正在进行调度窃取 G 的 P。
+			// pd.syscallwhen+10*1000*1000 > now 会判断系统调用时间是否超过了 10ms。
+			// 这里奇怪的是 runqempty 方法明明已经判断了没有其他任务，这就代表了没有任务需要执行，是不需要抢夺 P 的。
+			// 但实际情况是，由于可能会阻止 sysmon 线程的深度睡眠，最终还是希望继续占有 P。
 			if runqempty(_p_) && atomic.Load(&sched.nmspinning)+atomic.Load(&sched.npidle) > 0 && pd.syscallwhen+10*1000*1000 > now {
 				continue
 			}
+			// 到这里说明
+			// 当处理器的运行队列不为空或者不存在空闲处理器时；
+			// 当系统调用时间超过了 10ms 时；
 			// Drop allpLock so we can take sched.lock.
+			// 解锁相关属性：需要调用 unlock 方法解锁 allpLock，从而实现获取 sched.lock，以便继续下一步。
 			unlock(&allpLock)
 			// Need to decrement number of idle locked M's
 			// (pretending that one more is running) before the CAS.
 			// Otherwise the M from which we retake can exit the syscall,
 			// increment nmidle and report deadlock.
+			// 抢夺 P
+			// 减少闲置 M：需要在原子操作（CAS）之前减少闲置 M 的数量（假设有一个正在运行）。 否则在发生抢夺 M 时可能会退出系统调用，递增 nmidle 并报告死锁事件。
 			incidlelocked(-1)
+			// 系统监控通过在循环中抢占处理器来避免同一个 Goroutine 占用线程太长时间造成饥饿问题。
+			// 修改 P 状态：调用 atomic.Cas 方法将所抢夺的 P 状态设为 idle，以便于交于其他 M 使用。
 			if atomic.Cas(&_p_.status, s, _Pidle) {
 				if trace.enabled {
 					traceGoSysBlock(_p_)
@@ -5567,6 +5890,7 @@ func retake(now int64) uint32 {
 				}
 				n++
 				_p_.syscalltick++
+				// 抢夺 P 和调控 M：调用 handoffp 方法从系统调用或锁定的 M 中抢夺 P，会由新的 M 接管这个 P。
 				handoffp(_p_)
 			}
 			incidlelocked(1)
@@ -5574,6 +5898,13 @@ func retake(now int64) uint32 {
 		}
 	}
 	unlock(&allpLock)
+	/**
+	至此完成了抢占 P 的基本流程，我们可得出满足以下条件：
+
+	如果存在系统调用超时：存在超过 1 个 sysmon tick 周期（至少 20us）的任务，则会从系统调用中抢占 P。
+	如果没有空闲的 P：所有的 P 都已经与 M 绑定。需要抢占当前正处于系统调用之，而实际上系统调用并不需要的这个 P 的情况，会将其分配给其它 M 去调度其它 G。
+	如果 P 的运行队列里面有等待运行的 G，为了保证 P 的本地队列中的 G 得到及时调度。而自己本身的 P 又忙于系统调用，无暇管理。此时会寻找另外一个 M 来接管 P，从而实现继续调度 G 的目的
+	*/
 	return uint32(n)
 }
 
@@ -5585,9 +5916,11 @@ func retake(now int64) uint32 {
 func preemptall() bool {
 	res := false
 	for _, _p_ := range allp {
+		//遍历所有的p
 		if _p_.status != _Prunning {
 			continue
 		}
+		//只请求处于运行状态的goroutine暂停
 		if preemptone(_p_) {
 			res = true
 		}
@@ -5822,26 +6155,30 @@ func globrunqputbatch(batch *gQueue, n int32) {
 // sched.lock must be held.
 func globrunqget(_p_ *p, max int32) *g {
 	assertLockHeld(&sched.lock)
-
+	// 如果全局队列中没有 g 直接返回
 	if sched.runqsize == 0 {
 		return nil
 	}
-
+	// per-P 的部分，如果只有一个 P 的全部取
 	n := sched.runqsize/gomaxprocs + 1
 	if n > sched.runqsize {
 		n = sched.runqsize
 	}
+	// 不能超过取的最大个数
 	if max > 0 && n > max {
 		n = max
 	}
+	// 计算能不能在本地队列中放下 n 个
 	if n > int32(len(_p_.runq))/2 {
 		n = int32(len(_p_.runq)) / 2
 	}
-
+	// 修改本地队列的剩余空间
 	sched.runqsize -= n
-
+	// 拿到全局队列队头 g
 	gp := sched.runq.pop()
+	// 计数
 	n--
+	// 继续取剩下的 n-1 个全局队列放入本地队列
 	for ; n > 0; n-- {
 		gp1 := sched.runq.pop()
 		runqput(_p_, gp1, false)
@@ -5992,28 +6329,43 @@ func runqput(_p_ *p, gp *g, next bool) {
 	if randomizeScheduler && next && fastrandn(2) == 0 {
 		next = false
 	}
-
+	// 如果 next = true，将 gp 设置为下一个运行的 goroutine
 	if next {
+		//把gp放在_p_.runnext成员里，
+		//runnext成员中的goroutine会被优先调度起来运行
 	retryNext:
+		// _p_.runnext 会在 runqgrab 中被并发访问，所以需要采用原子操作
 		oldnext := _p_.runnext
 		if !_p_.runnext.cas(oldnext, guintptr(unsafe.Pointer(gp))) {
+			//有其它线程在操作runnext成员，需要重试
 			goto retryNext
 		}
 		if oldnext == 0 {
 			return
 		}
 		// Kick the old runnext out to the regular run queue.
+		//原本存放在runnext的gp需要放入runq的尾部
 		gp = oldnext.ptr()
 	}
 
 retry:
+	// 添加到本地无锁循环队列
+	//可能有其它线程正在并发修改runqhead成员，所以需要跟其它线程同步
 	h := atomic.LoadAcq(&_p_.runqhead) // load-acquire, synchronize with consumers
 	t := _p_.runqtail
-	if t-h < uint32(len(_p_.runq)) {
+	if t-h < uint32(len(_p_.runq)) { //判断队列是否满了
+		//队列还没有满，可以放入
 		_p_.runq[t%uint32(len(_p_.runq))].set(gp)
+		//虽然没有其它线程并发修改这个runqtail，但其它线程会并发读取该值以及p的runq成员
+		//这里使用StoreRel是为了：
+		//1，原子写入runqtail
+		//2，防止编译器和CPU乱序，保证上一行代码对runq的修改发生在修改runqtail之前
+		//3，可见行屏障，保证当前线程对运行队列的修改对其它线程立马可见
 		atomic.StoreRel(&_p_.runqtail, t+1) // store-release, makes the item available for consumption
 		return
 	}
+	// 如果本地队列满了，则将本地队列前半数的 goroutine 转移到全局 shced.runq
+	// 处理器本地的运行队列是一个使用数组构成的环形链表，它最多可以存储 256 个待执行任务
 	if runqputslow(_p_, gp, h, t) {
 		return
 	}
@@ -6024,7 +6376,7 @@ retry:
 // Put g and a batch of work from local runnable queue on global queue.
 // Executed only by the owner P.
 func runqputslow(_p_ *p, gp *g, h, t uint32) bool {
-	var batch [len(_p_.runq)/2 + 1]*g
+	var batch [len(_p_.runq)/2 + 1]*g //gp加上_p_本地队列的一半
 
 	// First, grab a batch from local queue.
 	n := t - h
@@ -6032,7 +6384,7 @@ func runqputslow(_p_ *p, gp *g, h, t uint32) bool {
 	if n != uint32(len(_p_.runq)/2) {
 		throw("runqputslow: queue is not full")
 	}
-	for i := uint32(0); i < n; i++ {
+	for i := uint32(0); i < n; i++ { //取出p本地队列的一半
 		batch[i] = _p_.runq[(h+i)%uint32(len(_p_.runq))].ptr()
 	}
 	if !atomic.CasRel(&_p_.runqhead, h, h+n) { // cas-release, commits consume
@@ -6048,6 +6400,8 @@ func runqputslow(_p_ *p, gp *g, h, t uint32) bool {
 	}
 
 	// Link the goroutines.
+	//全局运行队列是一个链表，这里首先把所有需要放入全局运行队列的g链接起来，
+	//减少后面对全局链表的锁住时间，从而降低锁冲突
 	for i := uint32(0); i < n; i++ {
 		batch[i].schedlink.set(batch[i+1])
 	}
@@ -6106,6 +6460,7 @@ func runqget(_p_ *p) (gp *g, inheritTime bool) {
 	// If the runnext is non-0 and the CAS fails, it could only have been stolen by another P,
 	// because other Ps can race to set runnext to 0, but only the current P can set it to non-0.
 	// Hence, there's no need to retry this CAS if it falls.
+	// 如果 cas 成功，则 g 继承剩余时间片执行
 	if next != 0 && _p_.runnext.cas(next, 0) {
 		return next.ptr(), true
 	}
@@ -6113,10 +6468,12 @@ func runqget(_p_ *p) (gp *g, inheritTime bool) {
 	for {
 		h := atomic.LoadAcq(&_p_.runqhead) // load-acquire, synchronize with other consumers
 		t := _p_.runqtail
+		// 本地队列是空，返回 nil
 		if t == h {
 			return nil, false
 		}
 		gp := _p_.runq[h%uint32(len(_p_.runq))].ptr()
+		// 从本地队列中以 cas 方式拿一个
 		if atomic.CasRel(&_p_.runqhead, h, h+1) { // cas-release, commits consume
 			return gp, false
 		}
@@ -6170,8 +6527,8 @@ func runqgrab(_p_ *p, batch *[256]guintptr, batchHead uint32, stealRunNextG bool
 	for {
 		h := atomic.LoadAcq(&_p_.runqhead) // load-acquire, synchronize with other consumers
 		t := atomic.LoadAcq(&_p_.runqtail) // load-acquire, synchronize with the producer
-		n := t - h
-		n = n - n/2
+		n := t - h                         //计算队列中有多少个goroutine
+		n = n - n/2                        //取队列中goroutine个数的一半
 		if n == 0 {
 			if stealRunNextG {
 				// Try to steal from _p_.runnext.
@@ -6205,7 +6562,12 @@ func runqgrab(_p_ *p, batch *[256]guintptr, batchHead uint32, stealRunNextG bool
 			}
 			return 0
 		}
+		//小细节：按理说队列中的goroutine个数最多就是len(_p_.runq)，
+		//所以n的最大值也就是len(_p_.runq)/2，那为什么需要这个判断呢？
 		if n > uint32(len(_p_.runq)/2) { // read inconsistent h and t
+			// 这里关键点在于读取runqhead和runqtail是两个操作而非一个原子操作，当我们读取runqhead之后但还未读取runqtail之前，
+			// 如果有其它线程快速的在增加（这是完全有可能的，其它偷取者从队列中偷取goroutine会增加runqhead，而队列的所有者往队列中添加goroutine会增加runqtail）这两个值，
+			// 则会导致我们读取出来的runqtail已经远远大于我们之前读取出来放在局部变量h里面的runqhead了，也就是代码注释中所说的h和t已经不一致了，所以这里需要这个if判断来检测异常情况。
 			continue
 		}
 		for i := uint32(0); i < n; i++ {
