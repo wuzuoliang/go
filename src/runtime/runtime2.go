@@ -336,11 +336,13 @@ type gobuf struct {
 
 // sudog represents a g in a wait list, such as for sending/receiving
 // on a channel.
+// Sudog表示等待列表中的g，例如在一个通道上发送接收。
 //
 // sudog is necessary because the g ↔ synchronization object relation
 // is many-to-many. A g can be on many wait lists, so there may be
 // many sudogs for one g; and many gs may be waiting on the same
 // synchronization object, so there may be many sudogs for one object.
+// 一个g可以在多个等待列表上，所以一个g可能有多个sudog;而且可能有很多gs在等待同一个同步对象，所以一个对象可能有很多sudogs。
 //
 // sudogs are allocated from a special pool. Use acquireSudog and
 // releaseSudog to allocate and free them.

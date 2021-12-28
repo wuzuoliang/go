@@ -278,6 +278,7 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 	// receiver copies it out. The sudog has a pointer to the
 	// stack object, but sudogs aren't considered as roots of the
 	// stack tracer.
+	// 为了确保GC期间的值还能保存，因为GC不会把sudog考虑为roor节点进行标记扫描
 	KeepAlive(ep)
 
 	// someone woke us up.
@@ -336,7 +337,8 @@ func send(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {
 	if sg.releasetime != 0 {
 		sg.releasetime = cputicks()
 	}
-	// 调用 runtime.goready 将等待接收数据的 Goroutine 标记成可运行状态 Grunnable 并把该 Goroutine 放到发送方所在的处理器的 runnext 上等待执行，该处理器在下一次调度时会立刻唤醒数据的接收方
+	// 调用 runtime.goready 将等待接收数据的 Goroutine 标记成可运行状态 Grunnable ，
+	// 并把该 Goroutine 放到发送方所在的处理器的 runnext 上等待执行，该处理器在下一次调度时会立刻唤醒数据的接收方
 	goready(gp, skip+1)
 }
 

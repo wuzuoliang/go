@@ -751,6 +751,7 @@ func gcStart(trigger gcTrigger) {
 	if trace.enabled {
 		traceGCSTWStart(1)
 	}
+	// 这里开始抢占所有p了，要STW
 	systemstack(stopTheWorldWithSema)
 	// Finish sweep before we start concurrent scan.
 	// 完成上一轮GC未完成的清扫工作
