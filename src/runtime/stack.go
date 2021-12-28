@@ -149,14 +149,16 @@ const (
 	stackPoisonMin = uintptrMask & -4096
 )
 
-// 全局栈缓存,分配 32KB 以下的栈内存，根据大小分配顺序，2K开始，每次是上一次的两倍，2、4、8、16..
+// 全局栈缓存,分配 32KB 以下的栈内存，根据大小分配顺序，2K开始，每次是上一次的两倍，2kB、4KB、8KB、16KB四种规格的mspan链表
 // Global pool of spans that have free stacks.
 // Stacks are assigned an order according to size.
 //     order = log_2(size/FixedStack)
 // There is a free list for each order.
 var stackpool [_NumStackOrders]struct {
 	item stackpoolItem
+	// 省略掉用于内存对齐的填充空间
 	_    [cpu.CacheLinePadSize - unsafe.Sizeof(stackpoolItem{})%cpu.CacheLinePadSize]byte
+	// https://mmbiz.qpic.cn/mmbiz_jpg/ibjI8pEWI9L4gc8b4ZHPs7DocfkUn24z9eURd5tTr6SayK08aU6wdTh1aYOZxqqJ2pTNwWMb6HvuZzguhtASt5Q/640?wx_fmt=jpeg&tp=webp&wxfrom=5&wx_lazy=1&wx_co=1
 }
 
 //go:notinheap
@@ -167,11 +169,14 @@ type stackpoolItem struct {
 	span mSpanList
 }
 
-// 全局大栈缓存,分配 32KB 以上的栈内存
+// 全局大栈缓存,分配 32KB 以上的栈内存,这也是个mspan链表的数组，长度为25。
+// mspan规格从8KB开始，之后每个链表的mspan规格，都是前一个的两倍。
+// https://mmbiz.qpic.cn/mmbiz_png/ibjI8pEWI9L5ib2ibkVjf5Uib9x2Ox89jLSVGlLfxkibekw6FHkq7iceQd262nlJv4LaRSFqrCQMloRUK2ASx6taLxmQ/640?wx_fmt=png&tp=webp&wxfrom=5&wx_lazy=1&wx_co=1
 // Global pool of large stack spans.
 var stackLarge struct {
 	lock mutex
 	free [heapAddrBits - pageShift]mSpanList // free lists by log_2(s.npages)
+	// https://mmbiz.qpic.cn/mmbiz_jpg/ibjI8pEWI9L4gc8b4ZHPs7DocfkUn24z9731GAsDcmzrCibvMjPEmoN8ILnsqJ35lQqS5ibabibjlaABl27WzmxU3Q/640?wx_fmt=jpeg&tp=webp&wxfrom=5&wx_lazy=1&wx_co=1
 }
 
 /**
@@ -376,6 +381,12 @@ func stackalloc(n uint32) stack {
 		}
 		return stack{uintptr(v), uintptr(v) + uintptr(n)}
 	}
+	//小于32KB的栈分配
+	//（1）对于小于32KB的栈空间，会优先使用当前P的本地缓存。
+	//（2）如果本地缓存中，对应规格的内存块链表为空，就从stackpool这里分配16KB的内存放到本地缓存（stackcache）中，然后继续从本地缓存分配。
+	//（3）若是stackpool中对应链表也为空，就从堆内存直接分配一个32KB的span划分成对应的内存块大小放到stackpool中。
+	// 不过有些情况下，是无法使用本地缓存的，在不能使用本地缓存的情况下，就直接从stackpool分配
+	// https://mmbiz.qpic.cn/mmbiz_jpg/ibjI8pEWI9L5ib2ibkVjf5Uib9x2Ox89jLSVIq4HZ8tKekh6zLon7SibFl8kOxxEmeeErvhxPsEyCB8Dc3NG89W52lQ/640?wx_fmt=jpeg&tp=webp&wxfrom=5&wx_lazy=1&wx_co=1
 
 	// 在 Linux 上，_FixedStack = 2048、_NumStackOrders = 4、_StackCacheSize = 32768，也就是如果申请的栈空间小于 32KB，会在全局栈缓存池或者线程的栈缓存中初始化内存
 	// Small stacks are allocated with a fixed-size free-list allocator.
@@ -412,6 +423,9 @@ func stackalloc(n uint32) stack {
 		}
 		v = unsafe.Pointer(x)
 	} else {
+		// 大于等于32KB的栈分配
+		// 如果要分配大于等于32KB的栈空间，就计算需要的page数目，并以2为底求对数（log2npage），将得到的结果作为stackLarge数组的下标，找到对应的空闲mspan链表。若链表不为空，就拿一个过来用。
+		// 如果链表为空，就直接从堆内存分配一个拥有这么多个页面的span，并把它整个用于分配栈内存。
 		// 如果 Goroutine 申请的内存空间过大，运行时会查看 runtime.stackLarge 中是否有剩余的空间，如果不存在剩余空间，它也会从堆上申请新的内存
 		var s *mspan
 		npage := uintptr(n) >> _PageShift
@@ -454,13 +468,28 @@ func stackalloc(n uint32) stack {
 	return stack{uintptr(v), uintptr(v) + uintptr(n)}
 }
 
+// 栈释放
 // stackfree frees an n byte stack allocation at stk.
 //
 // stackfree must run on the system stack because it uses per-P
 // resources and must not split the stack.
+// https://mmbiz.qpic.cn/mmbiz_jpg/ibjI8pEWI9L5ib2ibkVjf5Uib9x2Ox89jLSVbdW1Gk1COfMJLq3bAXzTPVfKSiayrEUwo6d0HRQpOib5r1ruoamksmzg/640?wx_fmt=jpeg&tp=webp&wxfrom=5&wx_lazy=1&wx_co=1
 //
 //go:systemstack
 func stackfree(stk stack) {
+	/**
+	什么时候释放栈
+	我们知道常规goroutine在运行结束时，会被放到调度器对象这里的空闲G队列中（sched.gFree）。这里的空闲协程分两种：
+	一种有协程栈（sched.gFree.stack）
+	一种没有协程栈（sched.gFree.noStack）
+	创建协程时，会先看看这里有没有空闲的协程可以用，优先使用有栈的协程
+	省得额外再分配。
+	（1）如果协程栈没有增长过（还是2KB），就把这个协程放到有栈的空闲G队列中；
+	（2）如果协程栈增长过，就把协程栈释放掉，再把协程放入到没有栈的空闲G队列中。
+	而这些空闲协程的栈，也会在GC执行markroot时被释放掉，到时候这些协程也会加入到没有栈的空闲协程队列中。
+
+	所以，常规goroutine栈的释放，一是发生在协程运行结束时，gfput会把增长过的栈释放掉，栈没有增长过的g会被放入sched.gFree.stack中；二是GC会处理sched.gFree.stack链表，把这里面所有g的栈都释放掉，然后把它们放入sched.gFree.noStack链表中。
+	 */
 	gp := getg()
 	v := unsafe.Pointer(stk.lo)
 	n := stk.hi - stk.lo
@@ -488,6 +517,16 @@ func stackfree(stk stack) {
 	if asanenabled {
 		asanpoison(v, n)
 	}
+	/**
+	这些栈释放到了哪里
+	协程栈释放时是放回当前P的本地缓存？还是放回全局栈缓存？（stackpool/stackLarge）抑或是直接还给堆内存？
+	其实都有可能，要视情况而定~
+	同栈分配时一样，小于32KB和大于等于32KB的栈，在释放的时候也会区别对待。
+	（1）小于32KB的栈，释放时会先放回到本地缓存中。如果本地缓存对应链表中栈空间总和大于32KB了，就把一部分放回stackpool中，本地这个链表只保留16KB。
+	如果本地缓存不可用，也会直接放回stackpool中。
+	而且，如果发现这个mspan中所有内存块都被释放了，就会把它归还给堆内存。
+	（2）对于大于等于32KB的栈释放，如果当前处在GC清理阶段（gcphase == _GCoff），就直接释放到堆内存，否则就先把它放回stackLarge这里。
+	 */
 	if n < _FixedStack<<_NumStackOrders && n < _StackCacheSize {
 		order := uint8(0)
 		n2 := n

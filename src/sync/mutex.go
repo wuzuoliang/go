@@ -137,6 +137,7 @@ func (m *Mutex) TryLock() bool {
 	return true
 }
 
+// 兼顾吞吐量与公平性——收放自如 https://mp.weixin.qq.com/s?__biz=Mzg5NjIwNzIxNQ==&mid=2247484603&idx=2&sn=6c0e9676033e9ab224a3f61c286951d9&chksm=c005d4bbf7725dad65dda2ee35a7feba805be1121f81837e5c6d0caecc86a588d70e859ad5a3#rd
 func (m *Mutex) lockSlow() {
 	var waitStartTime int64
 	starving := false
