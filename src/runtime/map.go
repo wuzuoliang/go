@@ -90,18 +90,18 @@ const (
 	// Each bucket (including its overflow buckets, if any) will have either all or none of its
 	// entries in the evacuated* states (except during the evacuate() method, which only happens
 	// during map writes and thus no one else can observe the map during that time).
-	emptyRest      = 0 // this cell is empty, and there are no more non-empty cells at higher indexes or overflows.
-	emptyOne       = 1 // this cell is empty
-	evacuatedX     = 2 // key/elem is valid.  Entry has been evacuated to first half of larger table.
-	evacuatedY     = 3 // same as above, but evacuated to second half of larger table.
-	evacuatedEmpty = 4 // cell is empty, bucket is evacuated.
-	minTopHash     = 5 // minimum tophash for a normal filled cell.
+	emptyRest      = 0 // this cell is empty, and there are no more non-empty cells at higher indexes or overflows. 空cell,并且在更高的索引或溢出时不再有非空cell
+	emptyOne       = 1 // this cell is empty 空cell
+	evacuatedX     = 2 // key/elem is valid.  Entry has been evacuated to first half of larger table. key,value 已经搬迁完毕，但是 key 都在新 bucket 前半部分，
+	evacuatedY     = 3 // same as above, but evacuated to second half of larger table. key,value 已经搬迁完毕，但是 key 都在新 bucket 后半部分
+	evacuatedEmpty = 4 // cell is empty, bucket is evacuated. 空的 cell，表示 cell 已经被迁移到新的 bucket
+	minTopHash     = 5 // minimum tophash for a normal filled cell. tophash 的最小正常值
 
 	// flags
-	iterator     = 1 // there may be an iterator using buckets
-	oldIterator  = 2 // there may be an iterator using oldbuckets
-	hashWriting  = 4 // a goroutine is writing to the map
-	sameSizeGrow = 8 // the current map growth is to a new map of the same size
+	iterator     = 1 // there may be an iterator using buckets  0001
+	oldIterator  = 2 // there may be an iterator using oldbuckets 0010
+	hashWriting  = 4 // a goroutine is writing to the map     0100
+	sameSizeGrow = 8 // the current map growth is to a new map of the same size 1000
 
 	// sentinel bucket ID for iterator checks
 	noCheck = 1<<(8*goarch.PtrSize) - 1
@@ -116,15 +116,24 @@ func isEmpty(x uint8) bool {
 type hmap struct {
 	// Note: the format of the hmap is also encoded in cmd/compile/internal/reflectdata/reflect.go.
 	// Make sure this stays in sync with the compiler's definition.
-	count     int // # live cells == size of map.  Must be first (used by len() builtin)
+	// 表示当前哈希表中的元素数量
+	count int // # live cells == size of map.  Must be first (used by len() builtin)
+	// 可能有迭代器使用 buckets
+	// iterator     = 1
+	// 可能有迭代器使用 oldbuckets
+	// oldIterator  = 2
+	// 有协程正在向 map 中写入 key
+	// hashWriting  = 4
+	// 等量扩容（对应条件 2）
+	// sameSizeGrow = 8
 	flags     uint8
-	B         uint8  // log_2 of # of buckets (can hold up to loadFactor * 2^B items)
-	noverflow uint16 // approximate number of overflow buckets; see incrnoverflow for details
-	hash0     uint32 // hash seed
+	B         uint8  // log_2 of # of buckets (can hold up to loadFactor * 2^B items) 表示当前哈希表持有的 buckets 数量，但是因为哈希表中桶的数量都 2 的倍数，所以该字段会存储对数，也就是 len(buckets) == 2^B
+	noverflow uint16 // approximate number of overflow buckets; see incrnoverflow for details overflow 的 bucket 近似数
+	hash0     uint32 // hash seed 哈希的种子，它能为哈希函数的结果引入随机性，这个值在创建哈希表时确定，并在调用哈希函数时作为参数传入
 
-	buckets    unsafe.Pointer // array of 2^B Buckets. may be nil if count==0.
-	oldbuckets unsafe.Pointer // previous bucket array of half the size, non-nil only when growing
-	nevacuate  uintptr        // progress counter for evacuation (buckets less than this have been evacuated)
+	buckets    unsafe.Pointer // array of 2^B Buckets. may be nil if count==0. 指向 buckets 数组，大小为 2^B,如果元素个数为0，就为 nil
+	oldbuckets unsafe.Pointer // previous bucket array of half the size, non-nil only when growing 是哈希在扩容时用于保存之前 buckets 的字段，它的大小是当前 buckets 的一半
+	nevacuate  uintptr        // progress counter for evacuation (buckets less than this have been evacuated) 指示扩容进度，小于此地址的 buckets 迁移完成
 
 	extra *mapextra // optional fields
 }
@@ -146,6 +155,19 @@ type mapextra struct {
 	nextOverflow *bmap
 }
 
+// 这只是表面(src/runtime/hashmap.go)的结构，编译期间会给它加料，动态地创建一个新的结构
+// type bmap struct {
+//     topbits  [8]uint8
+//     keys     [8]keytype
+//     values   [8]valuetype
+//     pad      uintptr
+//     overflow uintptr
+// }
+/**
+当 map 的 key 和 value 都不是指针，并且 size 都小于 128 字节的情况下，会把 bmap 标记为不含指针，
+这样可以避免 gc 时扫描整个 hmap。但是，我们看 bmap 其实有一个 overflow 的字段，是指针类型的，
+破坏了 bmap 不含指针的设想，这时会把 overflow 移动到 extra 字段来。
+*/
 // A bucket for a Go map.
 type bmap struct {
 	// tophash generally contains the top byte of the hash value
@@ -200,6 +222,8 @@ func tophash(hash uintptr) uint8 {
 	return top
 }
 
+// evacuated 只取了 tophash 数组的第一个值，判断它是否在 0-4 之间。
+// 对比上面的常量，当 top hash 是 evacuatedEmpty、evacuatedX、evacuatedY 这三个值之一，说明此 bucket 中的 key 全部被搬迁到了新 bucket。
 func evacuated(b *bmap) bool {
 	h := b.tophash[0]
 	return h > emptyOne && h < minTopHash
@@ -302,6 +326,7 @@ func makemap_small() *hmap {
 // If h != nil, the map can be created directly in h.
 // If h.buckets != nil, bucket pointed to can be used as the first bucket.
 func makemap(t *maptype, hint int, h *hmap) *hmap {
+	// 这个函数返回的结果：*hmap，它是一个指针
 	mem, overflow := math.MulUintptr(uintptr(hint), t.bucket.size)
 	if overflow || mem > maxAlloc {
 		hint = 0
@@ -315,6 +340,7 @@ func makemap(t *maptype, hint int, h *hmap) *hmap {
 
 	// Find the size parameter B which will hold the requested # of elements.
 	// For hint < 0 overLoadFactor returns false since hint < bucketCnt.
+	// 找到一个 B，使得 map 的装载因子在正常范围内
 	B := uint8(0)
 	for overLoadFactor(hint, B) {
 		B++
@@ -324,6 +350,9 @@ func makemap(t *maptype, hint int, h *hmap) *hmap {
 	// allocate initial hash table
 	// if B == 0, the buckets field is allocated lazily later (in mapassign)
 	// If hint is large zeroing this memory could take a while.
+	// 初始化 hash table
+	// 如果 B 等于 0，那么 buckets 就会在赋值的时候再分配
+	// 如果长度比较大，分配内存会花费长一点
 	if h.B != 0 {
 		var nextOverflow *bmap
 		h.buckets, nextOverflow = makeBucketArray(t, h.B, nil)
@@ -342,6 +371,15 @@ func makemap(t *maptype, hint int, h *hmap) *hmap {
 // allocated by makeBucketArray with the same t and b parameters.
 // If dirtyalloc is nil a new backing array will be alloced and
 // otherwise dirtyalloc will be cleared and reused as backing array.
+// 这个函数会按照下面的步骤执行：
+//
+// 计算哈希占用的内存是否溢出或者超出能分配的最大值；
+//
+// 调用 runtime.fastrand 获取一个随机的哈希种子；
+//
+// 根据传入的 hint 计算出需要的最小需要的桶的数量；
+//
+// 使用 runtime.makeBucketArray 创建用于保存桶的数组
 func makeBucketArray(t *maptype, b uint8, dirtyalloc unsafe.Pointer) (buckets unsafe.Pointer, nextOverflow *bmap) {
 	base := bucketShift(b)
 	nbuckets := base
@@ -411,39 +449,64 @@ func mapaccess1(t *maptype, h *hmap, key unsafe.Pointer) unsafe.Pointer {
 		}
 		return unsafe.Pointer(&zeroVal[0])
 	}
+	// 写和读冲突
 	if h.flags&hashWriting != 0 {
 		throw("concurrent map read and map write")
 	}
+	// 计算哈希值，并且加入 hash0 引入随机性
 	hash := t.hasher(key, uintptr(h.hash0))
+	// 比如 B=5，那 m 就是31，二进制是全 1
+	// 求 bucket num 时，将 hash 与 m 相与，
+	// 达到 bucket num 由 hash 的低 8 位决定的效果
 	m := bucketMask(h.B)
+	// b 就是 bucket 的地址
 	b := (*bmap)(add(h.buckets, (hash&m)*uintptr(t.bucketsize)))
 	if c := h.oldbuckets; c != nil {
+		// 如果不是同 size 扩容（看后面扩容的内容）
+		// 对应条件 1 的解决方案
 		if !h.sameSizeGrow() {
 			// There used to be half as many buckets; mask down one more power of two.
+			// 新 bucket 数量是老的 2 倍
 			m >>= 1
 		}
+		// 求出 key 在老的 map 中的 bucket 位置
 		oldb := (*bmap)(add(c, (hash&m)*uintptr(t.bucketsize)))
+		// 如果 oldb 没有搬迁到新的 bucket
+		// 那就在老的 bucket 中寻找
 		if !evacuated(oldb) {
 			b = oldb
 		}
 	}
+	// 计算出高 8 位的 hash
+	// 相当于右移 56 位，只取高8位
 	top := tophash(hash)
 bucketloop:
 	for ; b != nil; b = b.overflow(t) {
+		// 遍历 8 个 bucket
 		for i := uintptr(0); i < bucketCnt; i++ {
+			// tophash 不匹配，继续
 			if b.tophash[i] != top {
+				// 已迁移完毕，可以直接跳出循环
 				if b.tophash[i] == emptyRest {
 					break bucketloop
 				}
 				continue
 			}
+			// tophash 匹配，定位到 key 的位置
+			// key 定位公式
 			k := add(unsafe.Pointer(b), dataOffset+i*uintptr(t.keysize))
+			// key 是指针
 			if t.indirectkey() {
+				// 解引用
 				k = *((*unsafe.Pointer)(k))
 			}
+			// 如果 key 相等
 			if t.key.equal(key, k) {
+				// 定位到 value 的位置
+				// value 定位公式
 				e := add(unsafe.Pointer(b), dataOffset+bucketCnt*uintptr(t.keysize)+i*uintptr(t.elemsize))
 				if t.indirectelem() {
+					// value 解引用
 					e = *((*unsafe.Pointer)(e))
 				}
 				return e
@@ -610,11 +673,15 @@ again:
 		growWork(t, h, bucket)
 	}
 	b := (*bmap)(add(h.buckets, bucket*uintptr(t.bucketsize)))
+	// 计算出高 8 位的 hash
+	// 相当于右移 56 位，只取高8位
 	top := tophash(hash)
 
 	var inserti *uint8
 	var insertk unsafe.Pointer
 	var elem unsafe.Pointer
+	// 哈希会依次遍历正常桶和溢出桶中的数据，它会先比较哈希的高 8 位和桶中存储的 tophash，后比较传入的和桶中的值以加速数据的读写。
+	// 用于选择桶序号的是哈希的最低几位，而用于加速访问的是哈希的高 8 位，这种设计能够减少同一个桶中有大量相等 tophash 的概率影响性能。
 bucketloop:
 	for {
 		for i := uintptr(0); i < bucketCnt; i++ {
@@ -654,6 +721,9 @@ bucketloop:
 
 	// If we hit the max load factor or we have too many overflow buckets,
 	// and we're not already in the middle of growing, start growing.
+	// 触发扩容时机
+	// 当前的哈希表没有处于扩容状态并且装载因子已经超过了 6.5 或者存在了太多溢出的桶时，就会调用 hashGrow 对当前的哈希表进行扩容
+	// 如果当前的桶已经满了，就会调用 newoverflow 创建一个新的桶或者使用 hmap 预先在 noverflow 中创建好的桶来保存数据，新创建桶的指针会被追加到已有桶中，与此同时，溢出桶的创建会增加哈希表的 noverflow 计数器
 	if !h.growing() && (overLoadFactor(h.count+1, h.B) || tooManyOverflowBuckets(h.noverflow, h.B)) {
 		hashGrow(t, h)
 		goto again // Growing the table invalidates everything, so try again

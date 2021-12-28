@@ -30,13 +30,14 @@ const (
 	debugChan = false
 )
 
+// https://www.figma.com/proto/vfhlrTqsKicCO5ZbQZXgD4/runtime-structs?page-id=24%3A0&node-id=25%3A2&viewport=220%2C260%2C0.04483279958367348&scaling=contain
 type hchan struct {
 	qcount   uint           // total data in the queue
 	dataqsiz uint           // size of the circular queue
 	buf      unsafe.Pointer // points to an array of dataqsiz elements
-	elemsize uint16
+	elemsize uint16         // channel存储元素的sizeof
 	closed   uint32
-	elemtype *_type // element type
+	elemtype *_type // element type 当前 Channel 能够收发的元素类型
 	sendx    uint   // send index
 	recvx    uint   // receive index
 	recvq    waitq  // list of recv waiters
@@ -93,20 +94,24 @@ func makechan(t *chantype, size int) *hchan {
 	switch {
 	case mem == 0:
 		// Queue or element size is zero.
+		// 如果当前 Channel 中不存在缓冲区，那么就只会为 runtime.hchan 分配一段内存空间
 		c = (*hchan)(mallocgc(hchanSize, nil, true))
 		// Race detector uses this location for synchronization.
 		c.buf = c.raceaddr()
 	case elem.ptrdata == 0:
+		// 如果当前 Channel 中存储的类型不是指针类型，会为当前的 Channel 和底层的数组分配一块连续的内存空间
 		// Elements do not contain pointers.
 		// Allocate hchan and buf in one call.
 		c = (*hchan)(mallocgc(hchanSize+mem, nil, true))
 		c.buf = add(unsafe.Pointer(c), hchanSize)
 	default:
+		// 在默认情况下会单独为 runtime.hchan 和缓冲区分配内存
 		// Elements contain pointers.
 		c = new(hchan)
 		c.buf = mallocgc(mem, elem, true)
 	}
 
+	// 统一更新 runtime.hchan 的 elemsize、elemtype 和 dataqsiz 几个字段
 	c.elemsize = uint16(elem.size)
 	c.elemtype = elem
 	c.dataqsiz = uint(size)
@@ -206,6 +211,9 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 	}
 
 	if sg := c.recvq.dequeue(); sg != nil {
+		// 如果目标 Channel 没有被关闭并且已经有处于读等待的 Goroutine，
+		// 那么 runtime.chansend 会绕过chan.buf，直接从接收队列 recvq 中取出最先陷入等待的 Goroutine 并直接向它发送数据
+		// 调用 runtime.sendDirect 将发送的数据直接拷贝到 x = <-c 表达式中变量 x 所在的内存地址上
 		// Found a waiting receiver. We pass the value we want to send
 		// directly to the receiver, bypassing the channel buffer (if any).
 		send(c, sg, ep, func() { unlock(&c.lock) }, 3)
@@ -213,6 +221,8 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 	}
 
 	if c.qcount < c.dataqsiz {
+		// 如果创建的 Channel 包含缓冲区并且 Channel 中的数据没有装满
+		// 首先会使用 runtime.chanbuf 计算出下一个可以存储数据的位置，然后通过 runtime.typedmemmove 将发送的数据拷贝到缓冲区中并增加 sendx 索引和 qcount 计数器
 		// Space is available in the channel buffer. Enqueue the element to send.
 		qp := chanbuf(c, c.sendx)
 		if raceenabled {
@@ -227,11 +237,19 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 		unlock(&c.lock)
 		return true
 	}
-
+	// 当 Channel 没有接收者能够处理数据时，向 Channel 发送数据会被下游阻塞，当然使用 select 关键字可以向 Channel 非阻塞地发送消息。向 Channel 阻塞地发送数据会执行下面的代码
 	if !block {
 		unlock(&c.lock)
 		return false
 	}
+	/**
+	调用 runtime.getg 获取发送数据使用的 Goroutine；
+	执行 runtime.acquireSudog 获取 runtime.sudog 结构并设置这一次阻塞发送的相关信息，例如发送的 Channel、是否在 select 中和待发送数据的内存地址等；
+	将刚刚创建并初始化的 runtime.sudog 加入发送等待队列，并设置到当前 Goroutine 的 waiting 上，表示 Goroutine 正在等待该 sudog 准备就绪；
+	调用 runtime.goparkunlock 将当前的 Goroutine 陷入沉睡等待唤醒；
+	被调度器唤醒后会执行一些收尾工作，将一些属性置零并且释放 runtime.sudog 结构体；
+	函数在最后会返回 true 表示这次我们已经成功向 Channel 发送了数据
+	*/
 
 	// Block on the channel. Some receiver will complete our operation for us.
 	gp := getg()
@@ -318,6 +336,7 @@ func send(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {
 	if sg.releasetime != 0 {
 		sg.releasetime = cputicks()
 	}
+	// 调用 runtime.goready 将等待接收数据的 Goroutine 标记成可运行状态 Grunnable 并把该 Goroutine 放到发送方所在的处理器的 runnext 上等待执行，该处理器在下一次调度时会立刻唤醒数据的接收方
 	goready(gp, skip+1)
 }
 
@@ -520,15 +539,19 @@ func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool)
 	}
 
 	if sg := c.sendq.dequeue(); sg != nil {
+		// 当 Channel 的 sendq 队列中包含处于等待状态的 Goroutine 时，该函数会取出队列头等待的 Goroutine
 		// Found a waiting sender. If buffer is size 0, receive value
 		// directly from sender. Otherwise, receive from head of queue
 		// and add sender's value to the tail of the queue (both map to
 		// the same buffer slot because the queue is full).
+		// 发现一个等待发送者。如果缓冲区大小为0，直接从发送方接收值。
+		// 否则，从队列头部接收并将发送方的值添加到队列尾部(两者都映射到相同的缓冲区槽，因为队列已满)。
 		recv(c, sg, ep, func() { unlock(&c.lock) }, 3)
 		return true, true
 	}
 
 	if c.qcount > 0 {
+		// 当 Channel 的缓冲区中已经包含数据时，从 Channel 中接收数据会直接从缓冲区中 recvx 的索引位置中取出数据进行处理
 		// Receive directly from queue
 		qp := chanbuf(c, c.recvx)
 		if raceenabled {
@@ -590,6 +613,17 @@ func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool)
 	mysg.c = nil
 	releaseSudog(mysg)
 	return true, success
+	/**
+	如果 Channel 为空，那么会直接调用 runtime.gopark 挂起当前 Goroutine；
+	如果 Channel 已经关闭并且缓冲区没有任何数据，runtime.chanrecv 会直接返回；
+	如果 Channel 的 sendq 队列中存在挂起的 Goroutine，会将 recvx 索引所在的数据拷贝到接收变量所在的内存空间上并将 sendq 队列中 Goroutine 的数据拷贝到缓冲区；
+	如果 Channel 的缓冲区中包含数据，那么直接读取 recvx 索引对应的数据；
+	在默认情况下会挂起当前的 Goroutine，将 runtime.sudog 结构加入 recvq 队列并陷入休眠等待调度器的唤醒；
+	我们总结一下从 Channel 接收数据时，会触发 Goroutine 调度的两个时机：
+
+	当 Channel 为空时；
+	当缓冲区中不存在数据并且也不存在数据的发送者时；
+	*/
 }
 
 // recv processes a receive operation on a full channel c.
@@ -606,6 +640,13 @@ func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool)
 // sg must already be dequeued from c.
 // A non-nil ep must point to the heap or the caller's stack.
 func recv(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {
+	/**
+	如果 Channel 不存在缓冲区；
+	调用 runtime.recvDirect 将 Channel 发送队列中 Goroutine 存储的 elem 数据拷贝到目标内存地址中；
+	如果 Channel 存在缓冲区；
+	将队列中的数据拷贝到接收方的内存地址；
+	将发送队列头的数据拷贝到缓冲区中，释放一个阻塞的发送方
+	*/
 	if c.dataqsiz == 0 {
 		if raceenabled {
 			racesync(c, sg)
