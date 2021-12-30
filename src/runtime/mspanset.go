@@ -12,6 +12,7 @@ import (
 )
 
 // A spanSet is a set of *mspans.
+// spanSet是*mspans的set集合，可以通过pop、push来获得spans。
 //
 // spanSet is safe for concurrent push and pop operations.
 type spanSet struct {

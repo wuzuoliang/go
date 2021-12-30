@@ -52,7 +52,9 @@ type mcache struct {
 
 	// The rest is not accessed on every malloc.
 
-	// mcache.alloc 是一个数组，值为 *spans 类型，它是 go 中管理内存的基本单元。对于16-32 kb大小的内存都会使用这个数组里的的 spans 中分配。每个span存在两次，一个不包含指针的对象列表和另一个包含指针的对象列表。这种区别将使垃圾收集的工作更容易，因为它不必扫描不包含任何指针的范围。
+	// mcache.alloc 是一个数组，值为 *spans 类型，它是 go 中管理内存的基本单元。
+	// 对于16-32 kb大小的内存都会使用这个数组里的的 spans 中分配。每个span存在两次，一个不包含指针的对象列表和另一个包含指针的对象列表。
+	// 这种区别将使垃圾收集的工作更容易，因为它不必扫描不包含任何指针的范围。
 	alloc [numSpanClasses]*mspan // spans to allocate from, indexed by spanClass 用来分配的 spans，由 spanClass 索引
 	// 线程缓存在刚刚被初始化时是不包含 runtime.mspan 的，只有当用户程序申请内存时才会从上一级组件获取新的 runtime.mspan 满足内存分配的需求
 

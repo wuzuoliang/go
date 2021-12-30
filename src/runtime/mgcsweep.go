@@ -52,6 +52,9 @@ type sweepdata struct {
 	// It represents an index into the mcentral span
 	// sets. Accessed and updated via its load and
 	// update methods. Not protected by a lock.
+	// centralIndex是当前未扫描的span类。
+	// 它表示一个到mcentral span集的索引。
+	// 通过其加载和更新方法来访问和更新。没有被锁保护。
 	//
 	// Reset at mark termination.
 	// Used by mheap.nextSpanForSweep.
@@ -367,7 +370,7 @@ func sweepone() uintptr {
 		}
 		//  查找内存管理单元时会通过 state 和 sweepgen 两个字段判断当前单元是否需要处理。
 		//  如果内存单元的 sweepgen 等于 mheap.sweepgen - 2，那么意味着当前单元需要清理，
-		//  如果等于 mheap.sweepgen - 1，那么当前管理单元就正在清理
+		//  如果等于 mheap.sweepgen - 1，那么当前管理单元就正在清理，因为每次清扫轮sweepgen是自增2的
 		if state := s.state.get(); state != mSpanInUse {
 			// This can happen if direct sweeping already
 			// swept this span, but in that case the sweep
@@ -485,6 +488,8 @@ func (s *mspan) ensureSwept() {
 // Returns true if the span was returned to heap.
 // If preserve=true, don't return it to heap nor relink in mcentral lists;
 // caller takes care of it.
+// 清除在标记阶段未标记的块的自由终结器或收集终结器。它清除标记位，为下一轮GC做准备。
+// 如果span被返回到堆，则返回true。如果preserve=true，不要将其返回heap，也不要在mcentral列表中重新链接;调用者会处理它。
 func (sl *sweepLocked) sweep(preserve bool) bool {
 	// It's critical that we enter this function with preemption disabled,
 	// GC must not start while we are in the middle of this function.

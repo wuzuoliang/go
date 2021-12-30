@@ -86,7 +86,7 @@ type mstats struct {
 	// to 64 bits for atomic operations on 32 bit platforms.
 	_ [1 - _NumSizeClasses%2]uint32
 
-	last_gc_nanotime uint64 // last gc (monotonic time)
+	last_gc_nanotime uint64 // last gc (monotonic time) 上一次GC的开始时间
 	last_heap_inuse  uint64 // heap_inuse at mark termination of the previous GC
 
 	// heapStats is a set of statistics

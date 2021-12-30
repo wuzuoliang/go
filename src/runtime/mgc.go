@@ -612,12 +612,12 @@ func (t gcTrigger) test() bool {
 		if gcController.gcPercent.Load() < 0 { // 因为允许在运行时动态调整 gcpercent，因此需要额外再检查一遍
 			return false
 		}
-		// 计算上次 gc 开始时间是否大于强制执行 GC 周期的时间
+		// 计算上次 gc 开始时间是否大于强制执行 GC 周期的时间，默认超过2分钟
 		lastgc := int64(atomic.Load64(&memstats.last_gc_nanotime))
 		return lastgc != 0 && t.now-lastgc > forcegcperiod
 	case gcTriggerCycle:
 		// t.n > work.cycles, but accounting for wraparound.
-		// 进行测试的周期 t.n 大于实际触发的，需要进行 GC 则通过测试
+		// 进行测试的周期 t.n 大于实际触发的，需要进行 GC 则通过测试，一般是手动调用runtime.GC()
 		return int32(t.n-work.cycles) > 0
 	}
 	return true
@@ -1231,7 +1231,7 @@ func gcMarkTermination(nextTriggerRatio float64) {
 // the work is not stopped and from a regular G stack. The caller must hold
 // worldsema.
 /**
-为全局每个处理器创建用于执行后台标记任务的 Goroutine，每一个 Goroutine 都会运行 runtime.gcBgMarkWorker，
+为全局每个处理器创建用于执行后台标记任务的 Goroutine，为每一个 P 产生一个 G 运行 runtime.gcBgMarkWorker，
 所有运行 runtime.gcBgMarkWorker 的 Goroutine 在启动后都会陷入休眠等待调度器的唤醒
 */
 func gcBgMarkStartWorkers() {
@@ -1631,6 +1631,7 @@ func gcSweep(mode gcMode) {
 
 // gcResetMarkState resets global state prior to marking (concurrent
 // or STW) and resets the stack scan state of all Gs.
+// gcResetMarkState在标记(并发或STW)之前重置全局状态，并重置所有g的栈扫描状态。
 //
 // This is safe to do without the world stopped because any Gs created
 // during or after this will start out in the reset state.

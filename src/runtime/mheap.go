@@ -65,7 +65,7 @@ type mheap struct {
 	lock  mutex
 	pages pageAlloc // page allocation data structure
 
-	sweepgen uint32 // sweep generation, see comment in mspan; written during STW  written during STW 清扫生成
+	sweepgen uint32 // sweep generation, see comment in mspan; written during STW  written during STW 清扫生成的状态位
 
 	// allspans is a slice of all mspans ever created. Each mspan
 	// appears exactly once.
@@ -102,8 +102,8 @@ type mheap struct {
 	// progress has already been made.
 	pagesInUse         atomic.Uint64 // pages of spans in stats mSpanInUse  updated atomically 统计mSpanInUse 中spans的页数
 	pagesSwept         atomic.Uint64 // pages swept this cycle updated atomically 本轮清扫的页数
-	pagesSweptBasis    atomic.Uint64 // pagesSwept to use as the origin of the sweep ratio updated atomically 用作清扫率`
-	sweepHeapLiveBasis uint64        // value of gcController.heapLive to use as the origin of sweep ratio; written with lock, read without 用作扫描率的heap_live 值
+	pagesSweptBasis    atomic.Uint64 // pagesSwept to use as the origin of the sweep ratio updated atomically 用作清扫率
+	sweepHeapLiveBasis uint64        // value of gcController.heapLive to use as the origin of sweep ratio; written with lock, read without 用作扫描率的heap_live值
 	sweepPagesPerByte  float64       // proportional sweep ratio; written with lock, read without   清扫率
 	// TODO(austin): pagesInUse should be a uintptr, but the 386
 	// compiler can't 8-byte align fields.
@@ -221,15 +221,32 @@ type mheap struct {
 
 var mheap_ mheap
 
+/**
+# PIC
+[pic链接](https://www.figma.com/proto/tSl3CoSWKitJtvIhqLd8Ek/memory-management-%26%26-garbage-collection?page-id=146%3A0&node-id=4686%3A961&viewport=-457%2C167%2C0.1964392513036728&scaling=contain)
+[幼麟实验室 堆内存管理](https://mp.weixin.qq.com/s/grSm7wXJTLb8nfZT9_cN6w)
+[幼麟实验室 堆内存分配](https://mp.weixin.qq.com/s/SKhy0Xj681rdPlvGlfSMCw)
+[Go内存管理三部曲](https://zhuanlan.zhihu.com/p/266496735)
+*/
 // A heapArena stores metadata for a heap arena. heapArenas are stored
 // outside of the Go heap and accessed via the mheap_.arenas index.
 //
 //go:notinheap
 type heapArena struct {
+	// 对应的是arena,每个arena的大小是64MB，起始地址也对齐到64MB，每个arena包含8192个page，所以每个page大小为8KB
 	// heapArena中arena区域是真正的堆区，所有分配的span都是从这个地方分配。arena区域管理的单元大小是page，page页数为pagesPerArena
 	// bitmap stores the pointer/scalar bitmap for the words in
 	// this arena. See mbitmap.go for a description. Use the
 	// heapBits type to access this.
+	/**
+	（1）用一位标记这个arena中，一个指针大小的内存单元到底是指针还是标量；
+	（2）再用一位来标记这块内存空间的后续单元是否包含指针。
+	而且为了便于操作，bitmap中用一字节标记arena中4个指针大小的内存空间：低4位用于标记指针/标量；高4位用于标记扫描/终止。
+	例如在arena起始处分配一个slice，slice结构包括一个元素指针，一个长度，以及一个容量。对应的bitmap标记位图中：
+	（1）第一字节的第0位到第2位标记这三个字段是指针还是标量；
+	（2）第4位到第6位标记三个字段是否需要继续扫描。
+	https://mmbiz.qpic.cn/mmbiz_jpg/ibjI8pEWI9L6llQ2a6mQDrq7I6oz6fcGict5lL1JTugtrxicUpxwK6H9sLaofib2pM7fZPoR88Bv9eAlHPwD9uqO3g/640?wx_fmt=jpeg&tp=webp&wxfrom=5&wx_lazy=1&wx_co=1
+	*/
 	bitmap [heapArenaBitmapBytes]byte
 
 	// spans maps from virtual address page ID within this arena to *mspan.
@@ -254,6 +271,7 @@ type heapArena struct {
 	// Reads and writes are atomic.
 	// uint8类型的数组，长度为1024，所以一共8192位。结合这个名字，看起来似乎是标记哪些页面被使用了。
 	// 但实际上，这个位图只标记处于使用状态(mSpanInUse)的span的第一个page
+	// https://mmbiz.qpic.cn/mmbiz_jpg/ibjI8pEWI9L6llQ2a6mQDrq7I6oz6fcGicdR2lWdESULCDxsl8V9W3Ks3uyY0ZNzpc8PQiaKt34D6S478Id5BZWEQ/640?wx_fmt=jpeg&tp=webp&wxfrom=5&wx_lazy=1&wx_co=1
 	pageInUse [pagesPerArena / 8]uint8
 
 	// pageMarks is a bitmap that indicates which spans have any
@@ -401,29 +419,35 @@ type mspan struct {
 	startAddr uintptr // address of first byte of span aka s.base()
 	npages    uintptr // number of pages in span 管理 npages 个大小为 8KB 的页，这里的页不是操作系统中的内存页，它们是操作系统内存页的整数倍
 
-	manualFreeList gclinkptr // list of free objects in mSpanManual spans
+	manualFreeList gclinkptr // list of free objects in mSpanManual spans 栈内存相关
 
 	// freeindex is the slot index between 0 and nelems at which to begin scanning
 	// for the next free object in this span.
 	// Each allocation scans allocBits starting at freeindex until it encounters a 0
 	// indicating a free object. freeindex is then adjusted so that subsequent scans begin
 	// just past the newly discovered free object.
+	// Freeindex是0和nelems之间的槽索引，从这里开始扫描这个范围内的下一个自由对象。
+	// 每次分配都从freeindex开始扫描allocBits，直到遇到一个表示空闲对象的0为止。
+	// 然后调整Freeindex，以便随后的扫描在新发现的自由对象之后开始。
 	//
 	// If freeindex == nelem, this span has no free objects.
+	// 如果freeindex == nelem，表示这个span没有空闲对象。
 	//
 	// allocBits is a bitmap of objects in this span.
 	// If n >= freeindex and allocBits[n/8] & (1<<(n%8)) is 0
 	// then object n is free;
 	// otherwise, object n is allocated. Bits starting at nelem are
 	// undefined and should never be referenced.
+	// allocBits是这个跨度内对象的位图。如果 n >= freeindex 而且 allocBits[n/8] & (1<<(n%8)) is 0，则对象n是自由的;
+	// 否则，分配对象n。从nelem开始的位是未定义的，不应该被引用。
 	//
 	// Object n starts at address n*elemsize + (start << pageShift).
-	// 标记0~nelems之间的插槽索引，标记的的是在span中的下一个空闲对象
 	freeindex uintptr
 	// TODO: Look up nelems from sizeclass and remove this field if it
 	// helps performance.
 	nelems uintptr // number of object in the span. span中对象数（page是内存存储的基本单元, 一个span由多个page组成，同时一个对象可能占用一个或多个page)
 
+	// https://www.freesion.com/images/66/dc1107ff23dff9b038cc706e568ca6aa.png
 	// 在mspan里面有个allocBits，allocBits的每一位二进制对应一个object,0表示该object已被使用，1表示该object未被使用。allocCache作为allocBits的缓存，提交检索效率。
 	// Cache of the allocBits at freeindex. allocCache is shifted
 	// such that the lowest bit corresponds to the bit freeindex.
@@ -1282,6 +1306,7 @@ HaveSpan:
 			s.divMul = class_to_divmagic[sizeclass]
 		}
 
+		// mspan初始化时候，freeindex为0，allocCache全部为1
 		// Initialize mark and allocation structures.
 		s.freeindex = 0
 		s.allocCache = ^uint64(0) // all 1s indicating all free.

@@ -847,10 +847,28 @@ var zerobase uintptr
 
 // nextFreeFast返回下一个快速可用的空闲对象。否则返回0。
 func nextFreeFast(s *mspan) gclinkptr {
+	/**
+	allocBits是一个bitmap，标记是否使用，通过allocBits已经可以达到O(1)的分配速度，但是go为了极限性能，对其做了一个缓存，allocCache，从freeindex开始，长度是64。
+	初始状态，freeindex是0,allocCache全是1，allocBit是0。
+
+	第一次分配，theBit是0，freeindex为1，allocCache为01111...。
+
+	第二次分配，theBit还是0，freeinde是2，allocCache为001111...。
+
+	...
+
+	在一个span清扫之后，情况会又些复杂。 freeindex会为0，不妨假设allocBit为1010....1010。全是1和0交替。
+
+	第一次分配，theBit是1，freeindex是2,allocCache是001010...10。
+
+	第二次分配，theBit是1，freeindex是4,allocCache是00001010..10。 ...
+
+	最终freeindex变为了64返回0，这时会调用func (s *mspan) nextFreeIndex() uintptr
+	*/
 	// ctz64计算从低位起有多少个0，比如0x1280 返回的就是6，因为第一个出现1的bit为bit7
 	theBit := sys.Ctz64(s.allocCache) // Is there a free object in the allocCache?
-	if theBit < 64 {                  // 如果allocCache里面还有空闲块    // 0的s.allocCache 大小为64，所以和64比较
-		// allocCache 的一位对应mspan的一个object, 0代表已使用，1代表未使用。且allocCache和object的顺序是反向的
+	if theBit < 64 {                  // s.allocCache 大小为64，所以和64比较，小于64代表里面还有空闲块
+		// allocCache 的一位对应mspan的一个object, 0代表已使用，1代表未使用。
 		// 根据freeindex 和 theBit 可以计算出可以的object索引
 		result := s.freeindex + uintptr(theBit)
 		// result 指向空闲块的索引，该索引不能大于span所包含的总元素个数
@@ -900,7 +918,7 @@ func (c *mcache) nextFree(spc spanClass) (v gclinkptr, s *mspan, shouldhelpgc bo
 			println("runtime: s.allocCount=", s.allocCount, "s.nelems=", s.nelems)
 			throw("s.allocCount != s.nelems && freeIndex == s.nelems")
 		}
-		// 重新向mcache补充新的mspan
+		// 重新向mcache补充新的mspan，也就是给mspan链表增加span
 		c.refill(spc)
 		// 因为重新申请的span,需要gc
 		shouldhelpgc = true
@@ -927,7 +945,7 @@ func (c *mcache) nextFree(spc spanClass) (v gclinkptr, s *mspan, shouldhelpgc bo
 // Allocate an object of size bytes.
 // Small objects are allocated from the per-P cache's free lists.
 // Large objects (> 32 kB) are allocated straight from the heap.
-// GC-申请内存：三类对象的申请时机都会触发垃圾回收 shouldhelpgc
+// GC-申请内存：三类对象的申请时机都会触发垃圾回收 shouldhelpgc，shouldhelpgc
 func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	if gcphase == _GCmarktermination {
 		throw("mallocgc called with gcphase == _GCmarktermination")
@@ -1268,6 +1286,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	}
 
 	if shouldhelpgc {
+		// 如果需要申请，则可能还需要先协助清理部分
 		if t := (gcTrigger{kind: gcTriggerHeap}); t.test() {
 			gcStart(t)
 		}

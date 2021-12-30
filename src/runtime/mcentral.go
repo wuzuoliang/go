@@ -25,6 +25,7 @@ type mcentral struct {
 	// roles on each GC cycle. The unswept set is drained either by
 	// allocation or by the background sweeper in every GC cycle,
 	// so only two roles are necessary.
+	// 部分和全部包含两个mspan集:一个扫过的使用跨度，一个未扫过的使用跨度。这两个交易角色在每个GC循环中。在每个GC循环中，未清理的集合由分配或后台清理器清空，因此只需要两个角色。
 	//
 	// sweepgen is increased by 2 on each GC cycle, so the swept
 	// spans are in partial[sweepgen/2%2] and the unswept spans are in
@@ -32,18 +33,16 @@ type mcentral struct {
 	// unswept set and pushes spans that are still in-use on the
 	// swept set. Likewise, allocating an in-use span pushes it
 	// on the swept set.
+	// sweepgen在每个GC周期上增加2，所以扫描的跨度在partial[sweepgen2%2]中，未扫描的跨度在partial[1-sweepgen2%2]中。清扫跨度从未扫集和推动跨度，仍在使用扫集。同样地，分配一个正在使用的跨度将它推到扫频集上。
 	//
 	// Some parts of the sweeper can sweep arbitrary spans, and hence
 	// can't remove them from the unswept set, but will add the span
 	// to the appropriate swept list. As a result, the parts of the
 	// sweeper and mcentral that do consume from the unswept list may
 	// encounter swept spans, and these should be ignored.
-	partial [2]spanSet // list of spans with a free object
-	full    [2]spanSet // list of spans with no free objects
-	/**
-	其中 partial 和 full 都包含两个 spans 集数组。
-	一个用在扫描 spans,另一个用在未扫描spans。在每轮GC期间都扮演着不同的角色。mheap_.sweepgen 在每轮gc期间都会递增2
-	*/
+	// 清理器的某些部分可以清除任意的跨度，因此不能将它们从未清除的集合中删除，但会将跨度添加到适当的已清除列表中。因此，清扫器和mcentral中消耗未清扫列表的部分可能会遇到清扫跨度，这些应该被忽略。
+	partial [2]spanSet // list of spans with a free object 表示还有空间
+	full    [2]spanSet // list of spans with no free objects 表示无空闲空间
 }
 
 // Initialize a single central free list.
@@ -192,6 +191,7 @@ havespan:
 }
 
 // Return span from an mcache.
+// 如果mspan已经满了的话，是需要归还给mcentral的已扫描过的spanSet里的
 //
 // s must have a span class corresponding to this
 // mcentral and it must not be empty.

@@ -146,6 +146,8 @@ func (s *mspan) allocBitsForIndex(allocBitIndex uintptr) markBits {
 // and negates them so that ctz (count trailing zeros) instructions
 // can be used. It then places these 8 bytes into the cached 64 bit
 // s.allocCache.
+// 通过allocBits生成allocCache
+// 1.获取freeindex； 2：判断allocCache是否全为0，重新生成allocCache
 func (s *mspan) refillAllocCache(whichByte uintptr) {
 	bytes := (*[8]uint8)(unsafe.Pointer(s.allocBits.bytep(whichByte)))
 	aCache := uint64(0)
@@ -157,6 +159,7 @@ func (s *mspan) refillAllocCache(whichByte uintptr) {
 	aCache |= uint64(bytes[5]) << (5 * 8)
 	aCache |= uint64(bytes[6]) << (6 * 8)
 	aCache |= uint64(bytes[7]) << (7 * 8)
+	// 按位取反
 	s.allocCache = ^aCache
 }
 
@@ -168,6 +171,7 @@ func (s *mspan) nextFreeIndex() uintptr {
 	sfreeindex := s.freeindex
 	snelems := s.nelems
 	if sfreeindex == snelems {
+		// 如果freeindex已经到最后了，直接返回已满
 		return sfreeindex
 	}
 	if sfreeindex > snelems {
@@ -177,30 +181,37 @@ func (s *mspan) nextFreeIndex() uintptr {
 	aCache := s.allocCache
 
 	bitIndex := sys.Ctz64(aCache)
+	// 获取新的allocCache，使64位二进制不全都是0
 	for bitIndex == 64 {
 		// Move index to start of next cached bits.
+		// 找到下一个缓存的地址。这个是吧sfreeindex取向上64的倍数，所以freeindex相当于是每64重置一次，并重置allocCache的滑动窗口
 		sfreeindex = (sfreeindex + 64) &^ (64 - 1)
 		if sfreeindex >= snelems {
+			// allocCache里面已经没有空闲对象了，而且allocCache表示的对象已经到了最后，则返回已满
 			s.freeindex = snelems
 			return snelems
 		}
+		// freeindex是和allocBit对应起来的,allocBit是按bit计算的， 所以除8
 		whichByte := sfreeindex / 8
 		// Refill s.allocCache with the next 64 alloc bits.
+		// 否则从whichByte这个位置重新填充allocCache
 		s.refillAllocCache(whichByte)
 		aCache = s.allocCache
+		// 循环判断 bitIndex == 64，是要使allocCache有可用的object
 		bitIndex = sys.Ctz64(aCache)
 		// nothing available in cached bits
 		// grab the next 8 bytes and try again.
 	}
 	result := sfreeindex + uintptr(bitIndex)
+	// object已被用完
 	if result >= snelems {
 		s.freeindex = snelems
 		return snelems
 	}
-
+	// 加上本次使用的1位，位移清零
 	s.allocCache >>= uint(bitIndex + 1)
 	sfreeindex = result + 1
-
+	// 本次使用之后allocCache全为0了，需要重新生成allocCache
 	if sfreeindex%64 == 0 && sfreeindex != snelems {
 		// We just incremented s.freeindex so it isn't 0.
 		// As each 1 in s.allocCache was encountered and used for allocation
@@ -210,6 +221,7 @@ func (s *mspan) nextFreeIndex() uintptr {
 		whichByte := sfreeindex / 8
 		s.refillAllocCache(whichByte)
 	}
+	// 更新freeindex
 	s.freeindex = sfreeindex
 	return result
 }
