@@ -239,6 +239,7 @@ func efaceOf(ep *any) *eface {
 // A guintptr holds a goroutine pointer, but typed as a uintptr
 // to bypass write barriers. It is used in the Gobuf goroutine state
 // and in scheduling lists that are manipulated without a P.
+// guintptr保存一个goroutine指针，但类型化为uintptr以绕过写屏障。它用于Gobuf goroutine状态和不需要P操作的调度列表中。
 //
 // The Gobuf.g goroutine pointer is almost always updated by assembly code.
 // In one of the few places it is updated by Go code - func save - it must be

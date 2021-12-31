@@ -2687,6 +2687,7 @@ func startm(_p_ *p, spinning bool) {
 func handoffp(_p_ *p) {
 	// handoffp must start an M in any situation where
 	// findrunnable would return a G to run on _p_.
+	// 在任何情况下，handoffp必须启动一个M，其中findrunable将返回一个G在_p_上运行。
 
 	// if it has local work, start it straight away
 	if !runqempty(_p_) || sched.runqsize != 0 {
@@ -3588,7 +3589,7 @@ top:
 	pp := _g_.m.p.ptr()
 	pp.preempt = false
 
-	if sched.gcwaiting != 0 {
+	if sched.gcwaiting != 0 { // STW时需要提醒，状态改为1
 		// 如果需要 GC，不再进行调度
 		gcstopm()
 		goto top
@@ -3607,6 +3608,7 @@ top:
 	checkTimers(pp, 0)
 
 	var gp *g
+	// 是否继承时间片
 	var inheritTime bool
 
 	// Normal goroutines will check for need to wakeP in ready,
@@ -3816,6 +3818,7 @@ func park_m(gp *g) {
 	casgstatus(gp, _Grunning, _Gwaiting)
 	dropg()
 
+	// unlock
 	if fn := _g_.m.waitunlockf; fn != nil {
 		ok := fn(gp, _g_.m.waitlock)
 		_g_.m.waitunlockf = nil
@@ -4635,8 +4638,8 @@ func malg(stacksize int32) *g {
 func newproc(fn *funcval) {
 	// func newproc(siz int32, fn *funcval) 以前第一个参数是表示参数参数大小和表示函数的指针 funcval，它会获取 Goroutine 以及调用方的程序计数器，
 	// 现在只有一个funcval了，里面获取参数的方式修改了
-	gp := getg()         // 获取正在运行的g，初始化时是m0.g0
-	pc := getcallerpc()  // getcallerpc()返回一个地址，也就是调用newproc时由call指令压栈的函数返回地址
+	gp := getg()        // 获取正在运行的g，初始化时是m0.g0
+	pc := getcallerpc() // getcallerpc()返回一个地址，也就是调用newproc时由call指令压栈的函数返回地址
 	systemstack(func() { // 使用systemstack函数切换到g0栈
 		newg := newproc1(fn, gp, pc)
 
