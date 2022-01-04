@@ -6022,6 +6022,7 @@ func preemptall() bool {
 // and will be indicated by the gp->status no longer being
 // Grunning
 func preemptone(_p_ *p) bool {
+	// preemptone本质是将正在P上执行的M的curg的标志位置为true
 	mp := _p_.m.ptr()
 	// 如果 p 是与当前的 m 绑定的，不抢占
 	if mp == nil || mp == getg().m {
