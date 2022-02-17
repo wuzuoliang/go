@@ -236,11 +236,13 @@ func (b *Builder) buildActionID(a *Action) cache.ActionID {
 		}
 	} else if p.Goroot {
 		// The Go compiler always hides the exact value of $GOROOT
-		// when building things in GOROOT, but the C compiler
-		// merely rewrites GOROOT to GOROOT_FINAL.
-		if len(p.CFiles) > 0 {
-			fmt.Fprintf(h, "goroot %s\n", cfg.GOROOT_FINAL)
-		}
+		// when building things in GOROOT.
+		//
+		// The C compiler does not, but for packages in GOROOT we rewrite the path
+		// as though -trimpath were set, so that we don't invalidate the build cache
+		// (and especially any precompiled C archive files) when changing
+		// GOROOT_FINAL. (See https://go.dev/issue/50183.)
+		//
 		// b.WorkDir is always either trimmed or rewritten to
 		// the literal string "/tmp/go-build".
 	} else if !strings.HasPrefix(p.Dir, b.WorkDir) {
@@ -2011,6 +2013,7 @@ func (b *Builder) showOutput(a *Action, dir, desc, out string) {
 	if reldir := base.ShortPath(dir); reldir != dir {
 		suffix = strings.ReplaceAll(suffix, " "+dir, " "+reldir)
 		suffix = strings.ReplaceAll(suffix, "\n"+dir, "\n"+reldir)
+		suffix = strings.ReplaceAll(suffix, "\n\t"+dir, "\n\t"+reldir)
 	}
 	suffix = strings.ReplaceAll(suffix, " "+b.WorkDir, " $WORK")
 
@@ -2337,7 +2340,7 @@ func (b *Builder) ccompile(a *Action, p *load.Package, outfile string, flags []s
 	// directives pointing to the source directory. It should not generate those
 	// when -trimpath is enabled.
 	if b.gccSupportsFlag(compiler, "-fdebug-prefix-map=a=b") {
-		if cfg.BuildTrimpath {
+		if cfg.BuildTrimpath || p.Goroot {
 			// Keep in sync with Action.trimpath.
 			// The trimmed paths are a little different, but we need to trim in the
 			// same situations.
@@ -2359,8 +2362,6 @@ func (b *Builder) ccompile(a *Action, p *load.Package, outfile string, flags []s
 				to = filepath.Join("/_", toPath)
 			}
 			flags = append(flags[:len(flags):len(flags)], "-fdebug-prefix-map="+from+"="+to)
-		} else if p.Goroot && cfg.GOROOT_FINAL != cfg.GOROOT {
-			flags = append(flags[:len(flags):len(flags)], "-fdebug-prefix-map="+cfg.GOROOT+"="+cfg.GOROOT_FINAL)
 		}
 	}
 

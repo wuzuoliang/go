@@ -227,6 +227,9 @@ func (f *F) Fuzz(ff any) {
 	if fnType.NumIn() < 2 || fnType.In(0) != reflect.TypeOf((*T)(nil)) {
 		panic("testing: fuzz target must receive at least two arguments, where the first argument is a *T")
 	}
+	if fnType.NumOut() != 0 {
+		panic("testing: fuzz target must not return a value")
+	}
 
 	// Save the types of the function to compare against the corpus.
 	var types []reflect.Type
@@ -323,12 +326,14 @@ func (f *F) Fuzz(ff any) {
 			for _, v := range e.Values {
 				args = append(args, reflect.ValueOf(v))
 			}
-			// Before reseting the current coverage, defer the snapshot so that we
-			// make sure it is called right before the tRunner function exits,
-			// regardless of whether it was executed cleanly, panicked, or if the
-			// fuzzFn called t.Fatal.
-			defer f.fuzzContext.deps.SnapshotCoverage()
-			f.fuzzContext.deps.ResetCoverage()
+			// Before resetting the current coverage, defer the snapshot so that
+			// we make sure it is called right before the tRunner function
+			// exits, regardless of whether it was executed cleanly, panicked,
+			// or if the fuzzFn called t.Fatal.
+			if f.testContext.isFuzzing {
+				defer f.fuzzContext.deps.SnapshotCoverage()
+				f.fuzzContext.deps.ResetCoverage()
+			}
 			fn.Call(args)
 		})
 		<-t.signal
@@ -666,6 +671,7 @@ func fRunner(f *F, fn func(*F)) {
 			// This only affects fuzz tests run as normal tests.
 			// While fuzzing, T.Parallel has no effect, so f.sub is empty, and this
 			// branch is not taken. f.barrier is nil in that case.
+			f.testContext.release()
 			close(f.barrier)
 			// Wait for the subtests to complete.
 			for _, sub := range f.sub {

@@ -32,12 +32,12 @@ func (s *_TypeSet) IsAll() bool { return !s.comparable && len(s.methods) == 0 &&
 func (s *_TypeSet) IsMethodSet() bool { return !s.comparable && s.terms.isAll() }
 
 // IsComparable reports whether each type in the set is comparable.
-func (s *_TypeSet) IsComparable() bool {
+func (s *_TypeSet) IsComparable(seen map[Type]bool) bool {
 	if s.terms.isAll() {
 		return s.comparable
 	}
 	return s.is(func(t *term) bool {
-		return t != nil && Comparable(t.typ)
+		return t != nil && comparable(t.typ, seen, nil)
 	})
 }
 
@@ -56,9 +56,8 @@ func (s *_TypeSet) NumMethods() int { return len(s.methods) }
 func (s *_TypeSet) Method(i int) *Func { return s.methods[i] }
 
 // LookupMethod returns the index of and method with matching package and name, or (-1, nil).
-func (s *_TypeSet) LookupMethod(pkg *Package, name string) (int, *Func) {
-	// TODO(gri) s.methods is sorted - consider binary search
-	return lookupMethod(s.methods, pkg, name)
+func (s *_TypeSet) LookupMethod(pkg *Package, name string, foldCase bool) (int, *Func) {
+	return lookupMethod(s.methods, pkg, name, foldCase)
 }
 
 func (s *_TypeSet) String() string {
@@ -105,11 +104,6 @@ func (s *_TypeSet) hasTerms() bool { return !s.terms.isEmpty() && !s.terms.isAll
 // singleType returns the single type in s if there is exactly one; otherwise the result is nil.
 func (s *_TypeSet) singleType() Type { return s.terms.singleType() }
 
-// includes reports whether t ∈ s.
-// TODO(gri) This function is not used anywhere anymore. Remove once we
-//           are clear that we don't need it elsewhere in the future.
-func (s *_TypeSet) includes(t Type) bool { return s.terms.includes(t) }
-
 // subsetOf reports whether s1 ⊆ s2.
 func (s1 *_TypeSet) subsetOf(s2 *_TypeSet) bool { return s1.terms.subsetOf(s2.terms) }
 
@@ -133,7 +127,7 @@ func (s *_TypeSet) is(f func(*term) bool) bool {
 
 // underIs calls f with the underlying types of the specific type terms
 // of s and reports whether all calls to f returned true. If there are
-// no specific terms, is returns the result of f(nil).
+// no specific terms, underIs returns the result of f(nil).
 func (s *_TypeSet) underIs(f func(Type) bool) bool {
 	if !s.hasTerms() {
 		return f(nil)

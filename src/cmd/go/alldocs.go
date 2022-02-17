@@ -135,11 +135,6 @@
 //
 // 	-asmflags '[pattern=]arg list'
 // 		arguments to pass on each go tool asm invocation.
-// 	-buildinfo
-// 		Whether to stamp binaries with build flags. By default, the compiler name
-// 		(gc or gccgo), toolchain flags (like -gcflags), and environment variables
-// 		containing flags (like CGO_CFLAGS) are stamped into binaries. Use
-// 		-buildinfo=false to omit build information. See also -buildvcs.
 // 	-buildmode mode
 // 		build mode to use. See 'go help buildmode' for more.
 // 	-buildvcs
@@ -147,7 +142,7 @@
 // 		version control information is stamped into a binary if the main package
 // 		and the main module containing it are in the repository containing the
 // 		current directory (if there is a repository). Use -buildvcs=false to
-// 		omit version control information. See also -buildinfo.
+// 		omit version control information.
 // 	-compiler name
 // 		name of compiler to use, as in runtime.Compiler (gccgo or gc).
 // 	-gccgoflags '[pattern=]arg list'
@@ -182,14 +177,6 @@
 // 		directory, but it is not accessed. When -modfile is specified, an
 // 		alternate go.sum file is also used: its path is derived from the
 // 		-modfile flag by trimming the ".mod" extension and appending ".sum".
-// 	-workfile file
-// 		in module aware mode, use the given go.work file as a workspace file.
-// 		By default or when -workfile is "auto", the go command searches for a
-// 		file named go.work in the current directory and then containing directories
-// 		until one is found. If a valid go.work file is found, the modules
-// 		specified will collectively be used as the main modules. If -workfile
-// 		is "off", or a go.work file is not found in "auto" mode, workspace
-// 		mode is disabled.
 // 	-overlay file
 // 		read a JSON config file that provides an overlay for build operations.
 // 		The file is a JSON struct with a single field, named 'Replace', that
@@ -214,9 +201,8 @@
 // 	-trimpath
 // 		remove all file system paths from the resulting executable.
 // 		Instead of absolute file system paths, the recorded file names
-// 		will begin with either "go" (for the standard library),
-// 		or a module path@version (when using modules),
-// 		or a plain import path (when using GOPATH).
+// 		will begin either a module path@version (when using modules),
+// 		or a plain import path (when using the standard library, or GOPATH).
 // 	-toolexec 'cmd args'
 // 		a program to use to invoke toolchain programs like vet and asm.
 // 		For example, instead of running asm, the go command will run
@@ -1385,7 +1371,7 @@
 // builds from local modules.
 //
 // go.work files are line-oriented. Each line holds a single directive,
-// made up of a keyword followed by aruments. For example:
+// made up of a keyword followed by arguments. For example:
 //
 // 	go 1.18
 //
@@ -1478,25 +1464,25 @@
 // The -json flag prints the final go.work file in JSON format instead of
 // writing it back to go.mod. The JSON output corresponds to these Go types:
 //
-// 	type Module struct {
-// 		Path    string
-// 		Version string
-// 	}
-//
 // 	type GoWork struct {
-// 		Go        string
-// 		Directory []Directory
-// 		Replace   []Replace
+// 		Go      string
+// 		Use     []Use
+// 		Replace []Replace
 // 	}
 //
 // 	type Use struct {
-// 		Path       string
+// 		DiskPath   string
 // 		ModulePath string
 // 	}
 //
 // 	type Replace struct {
 // 		Old Module
 // 		New Module
+// 	}
+//
+// 	type Module struct {
+// 		Path    string
+// 		Version string
 // 	}
 //
 // See the workspaces design proposal at
@@ -2042,6 +2028,8 @@
 // 	GOENV
 // 		The location of the Go environment configuration file.
 // 		Cannot be set using 'go env -w'.
+// 		Setting GOENV=off in the environment disables the use of the
+// 		default configuration file.
 // 	GOFLAGS
 // 		A space-separated list of -flag=value settings to apply
 // 		to go commands by default, when the given flag is known by
@@ -2079,6 +2067,14 @@
 // 	GOVCS
 // 		Lists version control commands that may be used with matching servers.
 // 		See 'go help vcs'.
+// 	GOWORK
+// 		In module aware mode, use the given go.work file as a workspace file.
+// 		By default or when GOWORK is "auto", the go command searches for a
+// 		file named go.work in the current directory and then containing directories
+// 		until one is found. If a valid go.work file is found, the modules
+// 		specified will collectively be used as the main modules. If GOWORK
+// 		is "off", or a go.work file is not found in "auto" mode, workspace
+// 		mode is disabled.
 //
 // Environment variables for use with cgo:
 //
@@ -2131,7 +2127,7 @@
 // 	GOAMD64
 // 		For GOARCH=amd64, the microarchitecture level for which to compile.
 // 		Valid values are v1 (default), v2, v3, v4.
-// 		See https://en.wikipedia.org/wiki/X86-64#Microarchitecture_levels.
+// 		See https://golang.org/wiki/MinimumRequirements#amd64
 // 	GOMIPS
 // 		For GOARCH=mips{,le}, whether to use floating point instructions.
 // 		Valid values are hardfloat (default), softfloat.

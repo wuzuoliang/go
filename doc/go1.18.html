@@ -48,16 +48,16 @@ Do not send CLs removing the interior tags from such phrases.
 <p>
   The following is a list of the most visible changes. For a more comprehensive overview, see the
   <a href="https://go.googlesource.com/proposal/+/refs/heads/master/design/43651-type-parameters.md">proposal</a>.
-  For details see the <a href="https://golang.org/ref/spec">language spec</a>.
+  For details see the <a href="/ref/spec">language spec</a>.
 </p>
 
 <ul>
   <li>
     The syntax for
-    <a href="https://golang.org/ref/spec#Function_declarations">Function</a> and
-    <a href="https://golang.org/ref/spec#Type_declarations">type declarations</a>
+    <a href="/ref/spec#Function_declarations">function</a> and
+    <a href="/ref/spec#Type_declarations">type declarations</a>
     now accepts
-    <a href="https://golang.org/ref/spec#Type_parameters">type parameters</a>.
+    <a href="/ref/spec#Type_parameters">type parameters</a>.
   </li>
   <li>
     Parameterized functions and types can be instantiated by following them with a list of
@@ -65,11 +65,11 @@ Do not send CLs removing the interior tags from such phrases.
   </li>
   <li>
     The new token <code>~</code> has been added to the set of
-    <a href="https://golang.org/ref/spec#Operators_and_punctuation">operators and punctuation</a>.
+    <a href="/ref/spec#Operators_and_punctuation">operators and punctuation</a>.
   </li>
   <li>
     The syntax for
-    <a href="https://golang.org/ref/spec#Interface_types">Interface types</a>
+    <a href="/ref/spec#Interface_types">Interface types</a>
     now permits the embedding of arbitrary types (not just type names of interfaces)
     as well as union and <code>~T</code> type elements. Such interfaces may only be used
     as type constraints.
@@ -77,13 +77,13 @@ Do not send CLs removing the interior tags from such phrases.
   </li>
   <li>
     The new
-    <a href="https://golang.org/ref/spec#Predeclared_identifiers">predeclared identifier</a>
+    <a href="/ref/spec#Predeclared_identifiers">predeclared identifier</a>
     <code>any</code> is an alias for the empty interface. It may be used instead of
     <code>interface{}</code>.
   </li>
   <li>
     The new
-    <a href="https://golang.org/ref/spec#Predeclared_identifiers">predeclared identifier</a>
+    <a href="/ref/spec#Predeclared_identifiers">predeclared identifier</a>
     <code>comparable</code> is an interface the denotes the set of all types which can be
     compared using <code>==</code> or <code>!=</code>. It may only be used as (or embedded in)
     a type constraint.
@@ -91,11 +91,49 @@ Do not send CLs removing the interior tags from such phrases.
 </ul>
 
 <p>
+  There are three experimental packages using generics that may be
+  useful.
+  These packages are in x/exp repository; their API is not covered by
+  the Go 1 guarantee and may change as we gain more experience with
+  generics.
+  <dl>
+    <dt><a href="https://pkg.go.dev/golang.org/x/exp/constraints"><code>golang.org/x/exp/constraints</code></a></dt>
+    <dd>
+      <p>
+	Constraints that are useful for generic code, such as
+	<a href="https://pkg.go.dev/golang.org/x/exp/constraints#Ordered"><code>constraints.Ordered</code></a>.
+      </p>
+    </dd>
+
+    <dt><a href="https://pkg.go.dev/golang.org/x/exp/slices"><code>golang.org/x/exp/slices</code></a></dt>
+    <dd>
+      <p>
+	A collection of generic functions that operate on slices of
+	any element type.
+      </p>
+    </dd>
+
+    <dt><a href="https://pkg.go.dev/golang.org/x/exp/maps"><code>golang.org/x/exp/maps</code></a></dt>
+    <dd>
+      <p>
+	A collection of generic functions that operate on maps of
+	any key or element type.
+      </p>
+    </dd>
+  </dl>
+</p>
+
+<p>
   The current generics implementation has the following limitations:
   <ul>
     <li><!-- https://golang.org/issue/47631 -->
       The Go compiler cannot currently handle type declarations inside generic functions
       or methods. We hope to provide support for this feature in Go 1.19.
+    </li>
+    <li><!-- https://golang.org/issue/50937 -->
+      The Go compiler currently does not accept arguments of type parameter type with
+      the predeclared functions <code>real</code>, <code>imag</code>, and <code>complex</code>.
+      We hope to remove this restriction in Go 1.19.
     </li>
     <li><!-- https://golang.org/issue/49030 -->
       Embedding a type parameter, or a pointer to a type parameter, as
@@ -143,11 +181,12 @@ Do not send CLs removing the interior tags from such phrases.
 <h3 id="amd64">AMD64</h3>
 
 <p><!-- CL 349595 -->
-  Go 1.18 introduces the new <code>GOAMD64</code> environment variable which selects
-  a version of the AMD64 architecture. Allowed values are <code>v1</code>,
+  Go 1.18 introduces the new <code>GOAMD64</code> environment variable, which selects at compile time
+  a mininum target version of the AMD64 architecture. Allowed values are <code>v1</code>,
   <code>v2</code>, <code>v3</code>, or <code>v4</code>. Each higher level requires,
-  and takes advantage of, additional processor features.  A detailed description of the
-  versions is <a href="https://en.wikipedia.org/wiki/X86-64#Microarchitecture_levels">here</a>.
+  and takes advantage of, additional processor features. A detailed
+  description can be found
+  <a href="https://golang.org/wiki/MinimumRequirements#amd64">here</a>.
 </p>
 <p>
   The <code>GOAMD64</code> environment variable defaults to <code>v1</code>.
@@ -246,10 +285,10 @@ Do not send CLs removing the interior tags from such phrases.
   including build and tool tags (set with <code>-tags</code>), compiler,
   assembler, and linker flags (like <code>-gcflags</code>), whether cgo was
   enabled, and if it was, the values of the cgo environment variables
-  (like <code>CGO_CFLAGS</code>). This information may be omitted using the
-  flag <code>-buildinfo=false</code>. Both VCS and build information may be
-  read together with module information using <code>go</code>
-  <code>version</code> <code>-m</code> <code>file</code> or
+  (like <code>CGO_CFLAGS</code>).
+  Both VCS and build information may be read together with module
+  information using
+  <code>go</code> <code>version</code> <code>-m</code> <code>file</code> or
   <code>runtime/debug.ReadBuildInfo</code> (for the currently running binary)
   or the new <a href="#debug/buildinfo"><code>debug/buildinfo</code></a>
   package.
@@ -293,15 +332,52 @@ Do not send CLs removing the interior tags from such phrases.
   option <code>-fsanitize=address</code>).
 </p>
 
+<p><!-- https://golang.org/issue/47738, CL 344572 -->
+  The <code>go</code> <code>mod</code> <code>tidy</code> command now retains
+  additional checksums in the <code>go.sum</code> file for modules whose source
+  code is needed to verify that each imported package is provided by only one
+  module in the <a href="/ref/mod#glos-build-list">build list</a>. Because this
+  condition is rare and failure to apply it results in a build error, this
+  change is <em>not</em> conditioned on the <code>go</code> version in the main
+  module's <code>go.mod</code> file.
+</p>
+
 <p><!-- https://golang.org/issue/45713 -->
   The <code>go</code> command now supports a "Workspace" mode. If a
   <code>go.work</code> file is found in the working directory or a
-  parent directory, or one is specified using the <code>-workfile</code>
-  flag, it will put the <code>go</code> command into workspace mode.
+  parent directory, or one is specified using the <code>GOWORK</code>
+  environment variable, it will put the <code>go</code> command into workspace mode.
   In workspace mode, the <code>go.work</code> file will be used to
   determine the set of main modules used as the roots for module
   resolution, instead of using the normally-found <code>go.mod</code>
-  file to specify the single main module.
+  file to specify the single main module. For more information see the
+  <a href="/pkg/cmd/go#hdr-Workspace_maintenance"><code>go work</code></a>
+  documentation.
+</p>
+
+<p><!-- CL 251441 -->
+  The <code>go</code> command now supports additional command line
+  options for the new <a href="#fuzzing">fuzzing support described
+  above</a>:
+  <ul>
+    <li>
+      <code>go test</code> supports
+      <code>-fuzz</code>, <code>-fuzztime</code>, and
+      <code>-fuzzminimizetime</code> options.
+      For documentation on these see
+      <a href="/pkg/cmd/go#hdr-Testing_flags"><code>go help testflag</code></a>.
+    </li>
+    <li>
+      <code>go clean</code> supports a <code>-fuzzcache</code>
+      option.
+      For documentation see
+      <a href="/pkg/cmd/go#hdr-Remove_object_files_and_cached_files"><code>go help clean</code></a>.
+    </li>
+  </ul>
+</p>
+
+<p><!-- CL 240611 -->
+  TODO: <a href="https://golang.org/cl/240611">https://golang.org/cl/240611</a>: 240611: cmd/fix: add buildtag fix
 </p>
 
 <h3 id="gofmt"><code>gofmt</code></h3>
@@ -404,6 +480,14 @@ Do not send CLs removing the interior tags from such phrases.
   new <code>go</code> command <code>-asan</code> option.
 </p>
 
+<p><!-- https://golang.org/issue/50954 -->
+  Because the compiler's type checker was replaced in its entirety to
+  support generics, some error messages now may use different wording
+  than before. In some cases, pre-Go 1.18 error messages provided more
+  detail or were phrased in a more helpful way.
+  We intend to address these cases in Go 1.19.
+</p>
+
 <p> <!-- https://github.com/golang/go/issues/49569 -->
   Because of changes in the compiler related to supporting generics, the
   Go 1.18 compile speed can be roughly 15% slower than the Go 1.17 compile speed.
@@ -413,20 +497,26 @@ Do not send CLs removing the interior tags from such phrases.
 
 <h2 id="linker">Linker</h2>
 
+<p>
+  The linker emits <a href="https://tailscale.com/blog/go-linker/">far fewer relocations</a>.
+  As a result, most codebases will link faster, require less memory to link,
+  and generate smaller binaries.
+  Tools that process Go binaries should use Go 1.18's <code>debug/gosym</code> package
+  to transparently handle both old and new binaries.
+</p>
+
 <p><!-- CL 298610 -->
   The new linker <code>-asan</code> option supports the
   new <code>go</code> command <code>-asan</code> option.
 </p>
 
-<h2 id="library">Core library</h2>
+<h2 id="build">Build</h2>
 
-<h3 id="constraints">New <code>constraints</code> package</h3>
-
-<p><!-- CL 349709 -->
-  The new <a href="/pkg/constraints/"><code>constraints</code></a> package
-  defines a set of useful constraints that can be used with type parameters of
-  generic functions.
+<p><!-- CL 369914, CL 370274 -->
+  TODO: <a href="https://golang.org/cl/369914">https://golang.org/cl/369914</a>: for default bootstrap, use Go 1.17 if present, falling back to Go 1.4
 </p>
+
+<h2 id="library">Core library</h2>
 
 <h3 id="debug/buildinfo">New <code>debug/buildinfo</code> package</h3>
 
@@ -499,6 +589,39 @@ Do not send CLs removing the interior tags from such phrases.
   <a href="/pkg/net/#UDPAddr.AddrPort"><code>UDPAddr.AddrPort</code></a>.
 </p>
 
+<h3 id="tls10">TLS 1.0 and 1.1 disabled by default client-side</h3>
+
+<p><!-- CL 359779, golang.org/issue/45428 -->
+  If <a href="/pkg/crypto/tls/#Config.MinVersion"><code>Config.MinVersion</code></a>
+  is not set, it now defaults to TLS 1.2 for client connections. Any safely
+  up-to-date server is expected to support TLS 1.2, and browsers have required
+  it since 2020. TLS 1.0 and 1.1 are still supported by setting
+  <code>Config.MinVersion</code> to <code>VersionTLS10</code>.
+  The server-side default is unchanged at TLS 1.0.
+</p>
+
+<p>
+  The default can be temporarily reverted to TLS 1.0 by setting the
+  <code>GODEBUG=tls10default=1</code> environment variable.
+  This option will be removed in Go 1.19.
+</p>
+
+<h3 id="sha1">Rejecting SHA-1 certificates</h3>
+
+<p><!-- CL 359777, golang.org/issue/41682 -->
+  <code>crypto/x509</code> will now
+  reject certificates signed with the SHA-1 hash function. This doesn't
+  apply to self-signed root certificates. Practical attacks against SHA-1
+  <a href="https://shattered.io/">have been demonstrated since 2017</a> and publicly
+  trusted Certificate Authorities have not issued SHA-1 certificates since 2015.
+</p>
+
+<p>
+  This can be temporarily reverted by setting the
+  <code>GODEBUG=x509sha1=1</code> environment variable.
+  This option will be removed in Go 1.19.
+</p>
+
 <h3 id="minor_library_changes">Minor changes to the library</h3>
 
 <p>
@@ -539,7 +662,7 @@ Do not send CLs removing the interior tags from such phrases.
 
     <p><!-- CL 323318, CL 332771 -->
       <a href="/pkg/bytes/#Trim"><code>Trim</code></a>, <a href="/pkg/bytes/#TrimLeft"><code>TrimLeft</code></a>,
-      and <a href="/pkg/bytes/#TrimRight"><code>TrimRight</code></a> are now allocation free and, especially for 
+      and <a href="/pkg/bytes/#TrimRight"><code>TrimRight</code></a> are now allocation free and, especially for
       small ASCII cutsets, up to 10 times faster.
     </p>
 
@@ -551,6 +674,35 @@ Do not send CLs removing the interior tags from such phrases.
   </dd>
 </dl><!-- bytes -->
 
+<dl id="crypto/elliptic"><dt><a href="/pkg/crypto/elliptic/">crypto/elliptic</a></dt>
+  <dd>
+    <p><!-- CL 320071, CL 320072, CL 320074, CL 361402, CL 360014 -->
+      The <a href="/pkg/crypto/elliptic#P224"><code>P224</code></a>,
+      <a href="/pkg/crypto/elliptic#P384"><code>P384</code></a>, and
+      <a href="/pkg/crypto/elliptic#P521"><code>P521</code></a> curve
+      implementations are now all backed by code generated by the
+      <a href="https://github.com/mmcloughlin/addchain">addchain</a> and
+      <a href="https://github.com/mit-plv/fiat-crypto">fiat-crypto</a>
+      projects, the latter of which is based on a formally-verified model
+      of the arithmetic operations. They now use safer complete formulas
+      and internal APIs. P-224 and P-384 are now approximately four times
+      faster. All specific curve implementations are now constant-time.
+    </p>
+
+    <p>
+      Operating on invalid curve points (those for which the
+      <code>IsOnCurve</code> method returns false, and which are never returned
+      by <a href="/pkg/crypto/elliptic#Unmarshal"><code>Unmarshal</code></a> or
+      a <code>Curve</code> method operating on a valid point) has always been
+      undefined behavior, can lead to key recovery attacks, and is now
+      unsupported by the new backend. If an invalid point is supplied to a
+      <code>P224</code>, <code>P384</code>, or <code>P521</code> method, that
+      method will now return a random point. The behavior might change to an
+      explicit panic in a future release.
+    </p>
+  </dd>
+</dl><!-- crypto/elliptic -->
+
 <dl id="crypto/tls"><dt><a href="/pkg/crypto/tls/">crypto/tls</a></dt>
   <dd>
     <p><!-- CL 325250 -->
@@ -561,6 +713,57 @@ Do not send CLs removing the interior tags from such phrases.
   </dd>
 </dl><!-- crypto/tls -->
 
+<dl id="crypto/x509"><dt><a href="/pkg/crypto/x509">crypto/x509</a></dt>
+  <dd>
+    <p><!-- CL 353132, CL 353403 -->
+      <a href="/pkg/crypto/x509/#Certificate.Verify"><code>Certificate.Verify</code></a>
+      now uses platform APIs to verify certificate validity on macOS and iOS when it
+      is called with a nil
+      <a href="/pkg/crypto/x509/#VerifyOpts.Roots"><code>VerifyOpts.Roots</code></a>
+      or when using the root pool returned from
+      <a href="/pkg/crypto/x509/#SystemCertPool"><code>SystemCertPool</code></a>.
+    </p>
+
+    <p><!-- CL 353589 -->
+      <a href="/pkg/crypto/x509/#SystemCertPool"><code>SystemCertPool</code></a>
+      is now available on Windows.
+    </p>
+
+    <p>
+      On Windows, macOS, and iOS, when a
+      <a href="/pkg/crypto/x509/#CertPool"><code>CertPool</code></a> returned by
+      <a href="/pkg/crypto/x509/#SystemCertPool"><code>SystemCertPool</code></a>
+      has additional certificates added to it,
+      <a href="/pkg/crypto/x509/#Certificate.Verify"><code>Certificate.Verify</code></a>
+      will do two verifications: one using the platform verifier APIs and the
+      system roots, and one using the Go verifier and the additional roots.
+      Chains returned by the platform verifier APIs will be prioritized.
+    </p>
+
+    <p>
+      <a href="/pkg/crypto/x509/#CertPool.Subjects"><code>CertPool.Subjects</code></a>
+      is deprecated. On Windows, macOS, and iOS the
+      <a href="/pkg/crypto/x509/#CertPool"><code>CertPool</code></a> returned by
+      <a href="/pkg/crypto/x509/#SystemCertPool"><code>SystemCertPool</code></a>
+      will return a pool which does not include system roots in the slice
+      returned by <code>Subjects</code>, as a static list can't appropriately
+      represent the platform policies and might not be available at all from the
+      platform APIs.
+    </p>
+  </dd>
+</dl>
+
+<dl id="debug/dwarf"><dt><a href="/pkg/debug/dwarf/">debug/dwarf</a></dt>
+  <dd>
+    <p><!-- CL 380714 -->
+      The <a href="/pkg/debug/dwarf#StructField"><code>StructField</code></a>
+      and <a href="/pkg/debug/dwarf#BasicType"><code>BasicType</code></a>
+      structs both now have a <code>DataBitOffset</code> field, which
+      holds the value of the <code>DW_AT_data_bit_offset</code>
+      attribute if present.
+  </dd>
+</dl>
+
 <dl id="debug/elf"><dt><a href="/pkg/debug/elf/">debug/elf</a></dt>
   <dd>
     <p><!-- CL 352829 -->
@@ -569,6 +772,17 @@ Do not send CLs removing the interior tags from such phrases.
     </p>
   </dd>
 </dl><!-- debug/elf -->
+
+<dl id="debug/plan9obj"><dt><a href="/pkg/debug/plan9obj/">debug/plan9obj</a></dt>
+  <dd>
+    <p><!-- CL 350229 -->
+      The <a href="/pkg/debug/plan9obj#File.Symbols">File.Symbols</a>
+      method now returns the new exported error
+      value <a href="/pkg/debug/plan9obj#ErrNoSymbols">ErrNoSymbols</a>
+      if the file has no symbol section.
+    </p>
+  </dd>
+</dl><!-- debug/plan9obj -->
 
 <dl id="go/ast"><dt><a href="/pkg/go/ast/">go/ast</a></dt>
   <dd>
@@ -705,6 +919,19 @@ Do not send CLs removing the interior tags from such phrases.
         field.
       </li>
     </ul>
+    <p>
+      The predicates
+      <a href="/pkg/go/types/#AssignableTo"><code>AssignableTo</code></a>,
+      <a href="/pkg/go/types/#ConvertibleTo"><code>ConvertibleTo</code></a>,
+      <a href="/pkg/go/types/#Implements"><code>Implements</code></a>,
+      <a href="/pkg/go/types/#Identical"><code>Identical</code></a>,
+      <a href="/pkg/go/types/#IdenticalIgnoreTags"><code>IdenticalIgnoreTags</code></a>, and
+      <a href="/pkg/go/types/#AssertableTo"><code>AssertableTo</code></a>
+      now also work with arguments that are or contain generalized interfaces, i.e. interfaces
+      that may only be used as type constraints in Go code.
+      Note that the behavior of <code>AssertableTo</code> is undefined if the first argument
+      is a generalized interface.
+    </p>
   </dd>
 </dl>
 
@@ -715,6 +942,14 @@ Do not send CLs removing the interior tags from such phrases.
       <code>{{break}}</code> command will end the loop early and the
       new <code>{{continue}}</code> command will immediately start the
       next loop iteration.
+    </p>
+
+    <p><!-- CL 321490 -->
+      The <code>and</code> function no longer always evaluates all arguments; it
+      stops evaluating arguments after the first argument that evaluates to
+      false.  Similarly, the <code>or</code> function now stops evaluating
+      arguments after the first argument that evaluates to true. This makes a
+      difference if any of the arguments is a function call.
     </p>
   </dd>
 </dl><!-- html/template -->
@@ -833,7 +1068,7 @@ Do not send CLs removing the interior tags from such phrases.
       The old names will continue to work, but will be deprecated in a
       future Go release.
     </p>
-  </dd>
+  </dd><!-- CL 321889 and CL 345486 are optimizations, no need to mention. -->
 </dl><!-- reflect -->
 
 <dl id="regexp"><dt><a href="/pkg/regexp/">regexp</a></dt>
@@ -844,6 +1079,27 @@ Do not send CLs removing the interior tags from such phrases.
     </p>
   </dd>
 </dl><!-- regexp -->
+
+<dl id="runtime/debug"><dt><a href="/pkg/runtime/debug/">runtime/debug</a></dt>
+  <dd>
+    <p><!-- CL 354569 -->
+      The <a href="/pkg/runtime/debug#BuildInfo"><code>BuildInfo</code></a>
+      struct has two new fields, containing additional information
+      about how the binary was built:
+      <ul>
+	<li><a href="/pkg/runtime/debug#BuildInfo.GoVersion"><code>GoVersion</code></a>
+	  holds the version of Go used to build the binary.
+	</li>
+	<li>
+	  <a href="/pkg/runtime/debug#BuildInfo.Settings"><code>Settings</code></a>
+	  is a slice of
+	  <a href="/pkg/runtime/debug#BuildSettings"><code>BuildSettings</code></a>
+	  structs holding key/value pairs describing the build.
+	</li>
+      </ul>
+    </p>
+  </dd>
+</dl><!-- runtime/debug -->
 
 <dl id="strconv"><dt><a href="/pkg/strconv/">strconv</a></dt>
   <dd>
@@ -874,7 +1130,7 @@ Do not send CLs removing the interior tags from such phrases.
 
     <p><!-- CL 323318, CL 332771 -->
       <a href="/pkg/strings/#Trim"><code>Trim</code></a>, <a href="/pkg/strings/#TrimLeft"><code>TrimLeft</code></a>,
-      and <a href="/pkg/strings/#TrimRight"><code>TrimRight</code></a> are now allocation free and, especially for 
+      and <a href="/pkg/strings/#TrimRight"><code>TrimRight</code></a> are now allocation free and, especially for
       small ASCII cutsets, up to 10 times faster.
     </p>
 
@@ -947,7 +1203,9 @@ Do not send CLs removing the interior tags from such phrases.
     <p><!-- CL 251441 -->
       The new <a href="/pkg/testing#F"><code>testing.F</code></a> type
       is used by the new <a href="#fuzzing">fuzzing support described
-      above</a>.
+      above</a>. Tests also now support the command line
+      options <code>-test.fuzz</code>, <code>-test.fuzztime</code>, and
+      <code>-test.fuzzminimizetime</code>.
     </p>
   </dd>
 </dl><!-- testing -->

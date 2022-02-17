@@ -133,7 +133,7 @@ func TestMain(m *testing.M) {
 		}
 		gotool, err := testenv.GoTool()
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
+			fmt.Fprintln(os.Stderr, "locating go tool: ", err)
 			os.Exit(2)
 		}
 
@@ -1387,7 +1387,7 @@ func TestLdFlagsLongArgumentsIssue42295(t *testing.T) {
 	for buf.Len() < sys.ExecArgLengthLimit+1 {
 		buf.WriteString(testStr)
 	}
-	tg.run("run", "-buildinfo=false", "-ldflags", fmt.Sprintf(`-X "main.extern=%s"`, buf.String()), tg.path("main.go"))
+	tg.run("run", "-ldflags", fmt.Sprintf(`-X "main.extern=%s"`, buf.String()), tg.path("main.go"))
 	if tg.stderr.String() != buf.String() {
 		t.Errorf("strings differ")
 	}

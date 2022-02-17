@@ -189,10 +189,6 @@ func main() {
 	mainStarted = true
 
 	if GOARCH != "wasm" { // no threads on wasm yet, so no sysmon
-		// For runtime_syscall_doAllThreadsSyscall, we
-		// register sysmon is not ready for the world to be
-		// stopped.
-		atomic.Store(&sched.sysmonStarting, 1)
 		// 启动系统后台监控（定期垃圾回收、抢占调度等等）
 		// 现在执行的是main goroutine，所以使用的是main goroutine的栈，需要切换到g0栈去执行newm()
 		systemstack(func() {
@@ -212,7 +208,6 @@ func main() {
 	if g.m != &m0 {
 		throw("runtime.main not on m0")
 	}
-	m0.doesPark = true
 
 	// Record when the world started.
 	// Must be before doInit for tracing init.
@@ -885,8 +880,18 @@ func mcommoninit(mp *m, id int64) {
 		mp.id = mReserveID()
 	}
 
-	// cputicks is not very random in startup virtual machine
-	mp.fastrand = uint64(int64Hash(uint64(mp.id), fastrandseed^uintptr(cputicks())))
+	lo := uint32(int64Hash(uint64(mp.id), fastrandseed))
+	hi := uint32(int64Hash(uint64(cputicks()), ^fastrandseed))
+	if lo|hi == 0 {
+		hi = 1
+	}
+	// Same behavior as for 1.17.
+	// TODO: Simplify ths.
+	if goarch.BigEndian {
+		mp.fastrand = uint64(lo)<<32 | uint64(hi)
+	} else {
+		mp.fastrand = uint64(hi)<<32 | uint64(lo)
+	}
 
 	// 在 mcommoninit 里，会在一个父线程（或引导时的主线程）上调用 mpreinit，并最终会为一个 M 创建 gsignal，是一个在 M 上用于处理信号的 Goroutine。
 	// 因此，除了 g0 外，其实第一个创建的 g 应该是它， 但是它并没有设置 Goid (Goroutine ID)
@@ -1528,10 +1533,11 @@ func mstart1() {
 	// 当进入 schedule 之后，我们再也不会回到 mstart1，所以其他调用可以复用当前帧。
 	// https://img2018.cnblogs.com/blog/1671650/201905/1671650-20190509152704722-1766773488.png
 	_g_.sched.g = guintptr(unsafe.Pointer(_g_))
-	_g_.sched.pc = getcallerpc() //getcallerpc()获取mstart1执行完的返回地址
-	_g_.sched.sp = getcallersp() //getcallersp()获取调用mstart1时的栈顶地址
-	asminit()                    //在AMD64 Linux平台中，这个函数什么也没做，是个空函数
-	minit()                      //与信号相关的初始化
+	_g_.sched.pc = getcallerpc()
+	_g_.sched.sp = getcallersp()
+
+	asminit()
+	minit()
 
 	// Install signal handlers; after minit so that minit can
 	// prepare the thread to be able to handle the signals.
@@ -1573,24 +1579,12 @@ func mstartm0() {
 	initsig(false)
 }
 
-// mPark causes a thread to park itself - temporarily waking for
-// fixups but otherwise waiting to be fully woken. This is the
-// only way that m's should park themselves.
+// mPark causes a thread to park itself, returning once woken.
 //go:nosplit
 func mPark() {
-	g := getg()
-	for {
-		// 暂止当前的 M，在此阻塞，直到被唤醒
-		notesleep(&g.m.park)
-		// Note, because of signal handling by this parked m,
-		// a preemptive mDoFixup() may actually occur via
-		// mDoFixupAndOSYield(). (See golang.org/issue/44193)
-		// 清除暂止的 note
-		noteclear(&g.m.park)
-		if !mDoFixup() {
-			return
-		}
-	}
+	gp := getg()
+	notesleep(&gp.m.park)
+	noteclear(&gp.m.park)
 }
 
 // mexit tears down and exits the current thread.
@@ -1814,145 +1808,6 @@ func forEachP(fn func(*p)) {
 	releasem(mp)
 }
 
-// syscall_runtime_doAllThreadsSyscall serializes Go execution and
-// executes a specified fn() call on all m's.
-//
-// The boolean argument to fn() indicates whether the function's
-// return value will be consulted or not. That is, fn(true) should
-// return true if fn() succeeds, and fn(true) should return false if
-// it failed. When fn(false) is called, its return status will be
-// ignored.
-//
-// syscall_runtime_doAllThreadsSyscall first invokes fn(true) on a
-// single, coordinating, m, and only if it returns true does it go on
-// to invoke fn(false) on all of the other m's known to the process.
-//
-//go:linkname syscall_runtime_doAllThreadsSyscall syscall.runtime_doAllThreadsSyscall
-func syscall_runtime_doAllThreadsSyscall(fn func(bool) bool) {
-	if iscgo {
-		panic("doAllThreadsSyscall not supported with cgo enabled")
-	}
-	if fn == nil {
-		return
-	}
-	for atomic.Load(&sched.sysmonStarting) != 0 {
-		osyield()
-	}
-
-	// We don't want this thread to handle signals for the
-	// duration of this critical section. The underlying issue
-	// being that this locked coordinating m is the one monitoring
-	// for fn() execution by all the other m's of the runtime,
-	// while no regular go code execution is permitted (the world
-	// is stopped). If this present m were to get distracted to
-	// run signal handling code, and find itself waiting for a
-	// second thread to execute go code before being able to
-	// return from that signal handling, a deadlock will result.
-	// (See golang.org/issue/44193.)
-	lockOSThread()
-	var sigmask sigset
-	sigsave(&sigmask)
-	sigblock(false)
-
-	stopTheWorldGC("doAllThreadsSyscall")
-	if atomic.Load(&newmHandoff.haveTemplateThread) != 0 {
-		// Ensure that there are no in-flight thread
-		// creations: don't want to race with allm.
-		lock(&newmHandoff.lock)
-		for !newmHandoff.waiting {
-			unlock(&newmHandoff.lock)
-			osyield()
-			lock(&newmHandoff.lock)
-		}
-		unlock(&newmHandoff.lock)
-	}
-	if netpollinited() {
-		netpollBreak()
-	}
-	sigRecvPrepareForFixup()
-	_g_ := getg()
-	if raceenabled {
-		// For m's running without racectx, we loan out the
-		// racectx of this call.
-		lock(&mFixupRace.lock)
-		mFixupRace.ctx = _g_.racectx
-		unlock(&mFixupRace.lock)
-	}
-	if ok := fn(true); ok {
-		tid := _g_.m.procid
-		for mp := allm; mp != nil; mp = mp.alllink {
-			if mp.procid == tid {
-				// This m has already completed fn()
-				// call.
-				continue
-			}
-			// Be wary of mp's without procid values if
-			// they are known not to park. If they are
-			// marked as parking with a zero procid, then
-			// they will be racing with this code to be
-			// allocated a procid and we will annotate
-			// them with the need to execute the fn when
-			// they acquire a procid to run it.
-			if mp.procid == 0 && !mp.doesPark {
-				// Reaching here, we are either
-				// running Windows, or cgo linked
-				// code. Neither of which are
-				// currently supported by this API.
-				throw("unsupported runtime environment")
-			}
-			// stopTheWorldGC() doesn't guarantee stopping
-			// all the threads, so we lock here to avoid
-			// the possibility of racing with mp.
-			lock(&mp.mFixup.lock)
-			mp.mFixup.fn = fn
-			atomic.Store(&mp.mFixup.used, 1)
-			if mp.doesPark {
-				// For non-service threads this will
-				// cause the wakeup to be short lived
-				// (once the mutex is unlocked). The
-				// next real wakeup will occur after
-				// startTheWorldGC() is called.
-				notewakeup(&mp.park)
-			}
-			unlock(&mp.mFixup.lock)
-		}
-		for {
-			done := true
-			for mp := allm; done && mp != nil; mp = mp.alllink {
-				if mp.procid == tid {
-					continue
-				}
-				done = atomic.Load(&mp.mFixup.used) == 0
-			}
-			if done {
-				break
-			}
-			// if needed force sysmon and/or newmHandoff to wakeup.
-			lock(&sched.lock)
-			if atomic.Load(&sched.sysmonwait) != 0 {
-				atomic.Store(&sched.sysmonwait, 0)
-				notewakeup(&sched.sysmonnote)
-			}
-			unlock(&sched.lock)
-			lock(&newmHandoff.lock)
-			if newmHandoff.waiting {
-				newmHandoff.waiting = false
-				notewakeup(&newmHandoff.wake)
-			}
-			unlock(&newmHandoff.lock)
-			osyield()
-		}
-	}
-	if raceenabled {
-		lock(&mFixupRace.lock)
-		mFixupRace.ctx = 0
-		unlock(&mFixupRace.lock)
-	}
-	startTheWorldGC()
-	msigrestore(sigmask)
-	unlockOSThread()
-}
-
 // runSafePointFn runs the safe point function, if any, for this P.
 // This should be called like
 //
@@ -2002,6 +1857,13 @@ type cgothreadstart struct {
 //
 //go:yeswritebarrierrec
 func allocm(_p_ *p, fn func(), id int64) *m {
+	allocmLock.rlock()
+
+	// The caller owns _p_, but we may borrow (i.e., acquirep) it. We must
+	// disable preemption to ensure it is not stolen, which would make the
+	// caller lose ownership.
+	acquirem()
+
 	_g_ := getg()
 	acquirem() // disable GC because it can be called from sysmon
 	if _g_.m.p == 0 {
@@ -2049,8 +1911,9 @@ func allocm(_p_ *p, fn func(), id int64) *m {
 	if _p_ == _g_.m.p.ptr() {
 		releasep()
 	}
-	releasem(_g_.m)
 
+	releasem(_g_.m)
+	allocmLock.runlock()
 	return mp
 }
 
@@ -2327,9 +2190,17 @@ func unlockextra(mp *m) {
 	atomic.Storeuintptr(&extram, uintptr(unsafe.Pointer(mp)))
 }
 
-// execLock serializes exec and clone to avoid bugs or unspecified behaviour
-// around exec'ing while creating/destroying threads.  See issue #19546.
-var execLock rwmutex
+var (
+	// allocmLock is locked for read when creating new Ms in allocm and their
+	// addition to allm. Thus acquiring this lock for write blocks the
+	// creation of new Ms.
+	allocmLock rwmutex
+
+	// execLock serializes exec and clone to avoid bugs or unspecified
+	// behaviour around exec'ing while creating/destroying threads. See
+	// issue #19546.
+	execLock rwmutex
+)
 
 // newmHandoff contains a list of m structures that need new OS threads.
 // This is used by newm in situations where newm itself can't safely
@@ -2361,10 +2232,21 @@ var newmHandoff struct {
 // id is optional pre-allocated m ID. Omit by passing -1.
 //go:nowritebarrierrec
 func newm(fn func(), _p_ *p, id int64) {
+	// allocm adds a new M to allm, but they do not start until created by
+	// the OS in newm1 or the template thread.
+	//
+	// doAllThreadsSyscall requires that every M in allm will eventually
+	// start and be signal-able, even with a STW.
+	//
+	// Disable preemption here until we start the thread to ensure that
+	// newm is not preempted between allocm and starting the new thread,
+	// ensuring that anything added to allm is guaranteed to eventually
+	// start.
 	// 分配一个 m
+	acquirem()
+
 	mp := allocm(_p_, fn, id)
 	mp.doesPark = (_p_ != nil)
-	// 设置 p 用于后续绑定
 	mp.nextp.set(_p_)
 	// 在调度器的初始化的阶段，initSigmask 目标旨在记录主线程 M0 创建之初的屏蔽字 sigmask
 	mp.sigmask = initSigmask
@@ -2392,10 +2274,15 @@ func newm(fn func(), _p_ *p, id int64) {
 			notewakeup(&newmHandoff.wake)
 		}
 		unlock(&newmHandoff.lock)
+		// The M has not started yet, but the template thread does not
+		// participate in STW, so it will always process queued Ms and
+		// it is safe to releasem.
+		releasem(getg().m)
 		return
 	}
 	// 运行时执行系统监控不需要处理器，系统监控的 Goroutine 会直接在创建的线程上运行：
 	newm1(mp)
+	releasem(getg().m)
 }
 
 func newm1(mp *m) {
@@ -4723,11 +4610,13 @@ func newproc1(fn *funcval, callergp *g, callerpc uintptr) *g {
 	// newg真正从哪里开始执行并不依赖于这个成员，而是sched.pc
 	newg.ancestors = saveAncestors(callergp)
 	newg.startpc = fn.fn
-	if _g_.m.curg != nil {
-		newg.labels = _g_.m.curg.labels
-	}
-	if isSystemGoroutine(newg, false) { // 判断是否为 runtime 的 goroutine
+	if isSystemGoroutine(newg, false) {
 		atomic.Xadd(&sched.ngsys, +1)
+	} else {
+		// Only user goroutines inherit pprof labels.
+		if _g_.m.curg != nil {
+			newg.labels = _g_.m.curg.labels
+		}
 	}
 	// Track initial transition?
 	newg.trackingSeq = uint8(fastrand())
@@ -5777,7 +5666,6 @@ func sysmon() { // 系统线程
 					}
 					// 使用信号量同步系统监控即将进入休眠的状态
 					syscallWake = notetsleep(&sched.sysmonnote, sleep)
-					mDoFixup()
 					if shouldRelax {
 						osRelax(false)
 					}
@@ -5804,14 +5692,11 @@ func sysmon() { // 系统线程
 		if *cgo_yield != nil {
 			asmcgocall(*cgo_yield, nil)
 		}
-		// 轮询网络
 		// poll network if not polled for more than 10ms
-		// 如果上一次轮询网络已经过去了 10ms，那么系统监控还会在循环中轮询网络，检查是否有待执行的文件描述符：
 		lastpoll := int64(atomic.Load64(&sched.lastpoll))
 		if netpollinited() && lastpoll != 0 && lastpoll+10*1000*1000 < now {
 			atomic.Cas64(&sched.lastpoll, uint64(lastpoll), uint64(now))
 			list := netpoll(0) // non-blocking - returns list of goroutines
-			// G 列表不为空
 			if !list.empty() {
 				// Need to decrement number of idle locked M's
 				// (pretending that one more is running) before injectglist.
@@ -5826,7 +5711,6 @@ func sysmon() { // 系统线程
 				incidlelocked(1)
 			}
 		}
-		mDoFixup()
 		if GOOS == "netbsd" && needSysmonWorkaround {
 			// netpoll is responsible for waiting for timer
 			// expiration, so we typically don't have to worry

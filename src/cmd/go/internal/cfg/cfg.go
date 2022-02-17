@@ -25,7 +25,6 @@ import (
 // These are general "build flags" used by build and other commands.
 var (
 	BuildA                 bool   // -a flag
-	BuildBuildinfo         bool   // -buildinfo flag
 	BuildBuildmode         string // -buildmode flag
 	BuildBuildvcs          bool   // -buildvcs flag
 	BuildContext           = defaultContext()
@@ -50,10 +49,8 @@ var (
 	BuildWork              bool // -work flag
 	BuildX                 bool // -x flag
 
-	ModCacheRW       bool   // -modcacherw flag
-	ModFile          string // -modfile flag
-	WorkFile         string // -workfile flag
-	WorkFileExplicit bool   // whether -workfile was set explicitly
+	ModCacheRW bool   // -modcacherw flag
+	ModFile    string // -modfile flag
 
 	CmdName string // "build", "install", "list", "mod tidy", etc.
 
