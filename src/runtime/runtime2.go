@@ -325,11 +325,11 @@ type gobuf struct {
 	// and restores it doesn't need write barriers. It's still
 	// typed as a pointer so that any other writes from Go get
 	// write barriers.
-	sp   uintptr
-	pc   uintptr
-	g    guintptr
+	sp   uintptr  // 栈指针
+	pc   uintptr  // 程序计数器
+	g    guintptr // 持有 runtime.gobuf 的 Goroutine
 	ctxt unsafe.Pointer
-	ret  uintptr
+	ret  uintptr // 系统调用的返回值
 	lr   uintptr
 	bp   uintptr // for framepointer-enabled architectures
 }
@@ -418,7 +418,7 @@ type g struct {
 	_panic    *_panic // innermost panic - offset known to liblink
 	_defer    *_defer // innermost defer
 	m         *m      // current m; offset known to arm liblink
-	sched     gobuf
+	sched     gobuf   // 存储 Goroutine 的调度相关的数据
 	syscallsp uintptr // if status==Gsyscall, syscallsp = sched.sp to use during gc
 	syscallpc uintptr // if status==Gsyscall, syscallpc = sched.pc to use during gc
 	stktopsp  uintptr // expected sp at top of stack, to check in traceback
@@ -434,7 +434,7 @@ type g struct {
 	// 3. By debugCallWrap to pass parameters to a new goroutine because allocating a
 	//    closure in the runtime is forbidden.
 	param        unsafe.Pointer
-	atomicstatus uint32
+	atomicstatus uint32 //  Goroutine 的状态
 	stackLock    uint32 // sigprof/scang lock; TODO: fold in to atomicstatus
 	goid         int64
 	schedlink    guintptr
@@ -525,9 +525,9 @@ type m struct {
 	mstartfn      func()
 	curg          *g       // current running goroutine
 	caughtsig     guintptr // goroutine running during fatal signal
-	p             puintptr // attached p for executing go code (nil if not executing go code)
-	nextp         puintptr
-	oldp          puintptr // the p that was attached before executing a syscall
+	p             puintptr // attached p for executing go code (nil if not executing go code) 正在运行代码的处理器
+	nextp         puintptr // 暂存的处理器
+	oldp          puintptr // the p that was attached before executing a syscall 执行系统调用之前使用线程的处理器
 	id            int64
 	mallocing     int32
 	throwing      int32
@@ -550,7 +550,7 @@ type m struct {
 	cgoCallers    *cgoCallers // cgo traceback if crashing in cgo call
 	// 没有goroutine需要运行时，工作线程睡眠在这个park成员上，
 	// 其它线程通过这个park唤醒该工作线程
-	park          note
+	park note
 	// 记录所有工作线程的一个链表
 	alllink       *m // on allm
 	schedlink     muintptr
