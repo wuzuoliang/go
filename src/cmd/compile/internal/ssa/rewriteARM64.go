@@ -2430,6 +2430,7 @@ func rewriteValueARM64_OpARM64ANDshiftRL(v *Value) bool {
 		c := auxIntToInt64(v.AuxInt)
 		y := v_0
 		if y.Op != OpARM64SRLconst || auxIntToInt64(y.AuxInt) != c {
+<<<<<<< HEAD
 			break
 		}
 		x := y.Args[0]
@@ -2482,6 +2483,8 @@ func rewriteValueARM64_OpARM64ANDshiftRO(v *Value) bool {
 		c := auxIntToInt64(v.AuxInt)
 		y := v_0
 		if y.Op != OpARM64RORconst || auxIntToInt64(y.AuxInt) != c {
+=======
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 			break
 		}
 		x := y.Args[0]
@@ -2688,6 +2691,7 @@ func rewriteValueARM64_OpARM64BICshiftRL(v *Value) bool {
 	for {
 		c := auxIntToInt64(v.AuxInt)
 		if v_0.Op != OpARM64SRLconst || auxIntToInt64(v_0.AuxInt) != c {
+<<<<<<< HEAD
 			break
 		}
 		x := v_0.Args[0]
@@ -2724,6 +2728,10 @@ func rewriteValueARM64_OpARM64BICshiftRO(v *Value) bool {
 		if v_0.Op != OpARM64RORconst || auxIntToInt64(v_0.AuxInt) != c {
 			break
 		}
+=======
+			break
+		}
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 		x := v_0.Args[0]
 		if x != v_1 {
 			break
@@ -4185,6 +4193,7 @@ func rewriteValueARM64_OpARM64EONshiftRL(v *Value) bool {
 	for {
 		c := auxIntToInt64(v.AuxInt)
 		if v_0.Op != OpARM64SRLconst || auxIntToInt64(v_0.AuxInt) != c {
+<<<<<<< HEAD
 			break
 		}
 		x := v_0.Args[0]
@@ -4221,6 +4230,10 @@ func rewriteValueARM64_OpARM64EONshiftRO(v *Value) bool {
 		if v_0.Op != OpARM64RORconst || auxIntToInt64(v_0.AuxInt) != c {
 			break
 		}
+=======
+			break
+		}
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 		x := v_0.Args[0]
 		if x != v_1 {
 			break
@@ -18274,6 +18287,7 @@ func rewriteValueARM64_OpARM64ORNshiftRL(v *Value) bool {
 	for {
 		c := auxIntToInt64(v.AuxInt)
 		if v_0.Op != OpARM64SRLconst || auxIntToInt64(v_0.AuxInt) != c {
+<<<<<<< HEAD
 			break
 		}
 		x := v_0.Args[0]
@@ -18310,6 +18324,10 @@ func rewriteValueARM64_OpARM64ORNshiftRO(v *Value) bool {
 		if v_0.Op != OpARM64RORconst || auxIntToInt64(v_0.AuxInt) != c {
 			break
 		}
+=======
+			break
+		}
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 		x := v_0.Args[0]
 		if x != v_1 {
 			break

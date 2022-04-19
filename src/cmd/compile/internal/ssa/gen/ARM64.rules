@@ -1726,6 +1726,7 @@
 (ANDshiftLL y:(SLLconst x [c]) x [c]) => y
 (ANDshiftRL y:(SRLconst x [c]) x [c]) => y
 (ANDshiftRA y:(SRAconst x [c]) x [c]) => y
+<<<<<<< HEAD
 (ANDshiftRO y:(RORconst x [c]) x [c]) => y
 (ORshiftLL  y:(SLLconst x [c]) x [c]) => y
 (ORshiftRL  y:(SRLconst x [c]) x [c]) => y
@@ -1747,6 +1748,23 @@
 (ORNshiftRL (SRLconst x [c]) x [c]) => (MOVDconst [-1])
 (ORNshiftRA (SRAconst x [c]) x [c]) => (MOVDconst [-1])
 (ORNshiftRO (RORconst x [c]) x [c]) => (MOVDconst [-1])
+=======
+(ORshiftLL  y:(SLLconst x [c]) x [c]) => y
+(ORshiftRL  y:(SRLconst x [c]) x [c]) => y
+(ORshiftRA  y:(SRAconst x [c]) x [c]) => y
+(XORshiftLL (SLLconst x [c]) x [c]) => (MOVDconst [0])
+(XORshiftRL (SRLconst x [c]) x [c]) => (MOVDconst [0])
+(XORshiftRA (SRAconst x [c]) x [c]) => (MOVDconst [0])
+(BICshiftLL (SLLconst x [c]) x [c]) => (MOVDconst [0])
+(BICshiftRL (SRLconst x [c]) x [c]) => (MOVDconst [0])
+(BICshiftRA (SRAconst x [c]) x [c]) => (MOVDconst [0])
+(EONshiftLL (SLLconst x [c]) x [c]) => (MOVDconst [-1])
+(EONshiftRL (SRLconst x [c]) x [c]) => (MOVDconst [-1])
+(EONshiftRA (SRAconst x [c]) x [c]) => (MOVDconst [-1])
+(ORNshiftLL (SLLconst x [c]) x [c]) => (MOVDconst [-1])
+(ORNshiftRL (SRLconst x [c]) x [c]) => (MOVDconst [-1])
+(ORNshiftRA (SRAconst x [c]) x [c]) => (MOVDconst [-1])
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 
 // Generate rotates with const shift
 (ADDshiftLL [c] (SRLconst x [64-c]) x) => (RORconst [64-c] x)

@@ -194,10 +194,17 @@ cp go.mod.orig go.mod
 go mod edit -require github.com/pierrec/lz4@v2.0.9-0.20190209155647-9a39efadad3d+incompatible
 cd outside
 ! go list -m github.com/pierrec/lz4
+<<<<<<< HEAD
 stderr '^go: example.com@v0.0.0 requires\n\tgithub.com/pierrec/lz4@v2.0.9-0.20190209155647-9a39efadad3d\+incompatible: invalid version: module contains a go.mod file, so module path must match major version \("github.com/pierrec/lz4/v2"\)$'
 cd ..
 ! go list -m github.com/pierrec/lz4
 stderr '^go: github.com/pierrec/lz4@v2.0.9-0.20190209155647-9a39efadad3d\+incompatible: invalid version: module contains a go.mod file, so module path must match major version \("github.com/pierrec/lz4/v2"\)$'
+=======
+stderr '^go list -m: example.com@v0.0.0 requires\n\tgithub.com/pierrec/lz4@v2.0.9-0.20190209155647-9a39efadad3d\+incompatible: invalid version: module contains a go.mod file, so module path must match major version \("github.com/pierrec/lz4/v2"\)$'
+cd ..
+! go list -m github.com/pierrec/lz4
+stderr '^go list -m: github.com/pierrec/lz4@v2.0.9-0.20190209155647-9a39efadad3d\+incompatible: invalid version: module contains a go.mod file, so module path must match major version \("github.com/pierrec/lz4/v2"\)$'
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 
 # A +incompatible pseudo-version is valid for a revision of the module
 # that lacks a go.mod file.
@@ -221,8 +228,13 @@ stdout 'github.com/pierrec/lz4 v2.0.5\+incompatible'
 # 'go get' for a mismatched major version with a go.mod file should error out,
 # not resolve to a pseudo-version with a different major version.
 cp go.mod.orig go.mod
+<<<<<<< HEAD
 ! go get github.com/pierrec/lz4@v2.0.8
 stderr 'go: github.com/pierrec/lz4@v2.0.8: invalid version: module contains a go.mod file, so module path must match major version \("github.com/pierrec/lz4/v2"\)$'
+=======
+! go get -d github.com/pierrec/lz4@v2.0.8
+stderr 'go get: github.com/pierrec/lz4@v2.0.8: invalid version: module contains a go.mod file, so module path must match major version \("github.com/pierrec/lz4/v2"\)$'
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 
 # An invalid +incompatible suffix for a canonical version should error out,
 # not resolve to a pseudo-version.
@@ -233,10 +245,17 @@ cp go.mod.orig go.mod
 go mod edit -require github.com/pierrec/lz4@v2.0.8+incompatible
 cd outside
 ! go list -m github.com/pierrec/lz4
+<<<<<<< HEAD
 stderr '^go: github.com/pierrec/lz4@v2.0.8\+incompatible: invalid version: module contains a go.mod file, so module path must match major version \("github.com/pierrec/lz4/v2"\)$'
 cd ..
 ! go list -m github.com/pierrec/lz4
 stderr '^go: github.com/pierrec/lz4@v2.0.8\+incompatible: invalid version: module contains a go.mod file, so module path must match major version \("github.com/pierrec/lz4/v2"\)$'
+=======
+stderr '^go list -m: github.com/pierrec/lz4@v2.0.8\+incompatible: invalid version: module contains a go.mod file, so module path must match major version \("github.com/pierrec/lz4/v2"\)$'
+cd ..
+! go list -m github.com/pierrec/lz4
+stderr '^go list -m: github.com/pierrec/lz4@v2.0.8\+incompatible: invalid version: module contains a go.mod file, so module path must match major version \("github.com/pierrec/lz4/v2"\)$'
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 
 -- go.mod.orig --
 module example.com

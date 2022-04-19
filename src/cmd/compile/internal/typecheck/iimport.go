@@ -1462,6 +1462,7 @@ func (r *importReader) node() ir.Node {
 		expr := r.expr()
 		sel := r.exoticSelector()
 		n := ir.NewSelectorExpr(pos, op, expr, sel)
+<<<<<<< HEAD
 		if go117ExportTypes {
 			n.SetType(r.exoticType())
 			switch op {
@@ -1501,6 +1502,23 @@ func (r *importReader) node() ir.Node {
 					n.SetOp(op)
 					n.SetType(typ)
 				}
+=======
+		n.SetType(r.exoticType())
+		switch op {
+		case ir.ODOT, ir.ODOTPTR, ir.ODOTINTER:
+			n.Selection = r.exoticField()
+		case ir.OMETHEXPR:
+			n = typecheckMethodExpr(n).(*ir.SelectorExpr)
+		case ir.ODOTMETH, ir.OCALLPART:
+			// These require a Lookup to link to the correct declaration.
+			rcvrType := expr.Type()
+			typ := n.Type()
+			n.Selection = Lookdot(n, rcvrType, 1)
+			if op == ir.OCALLPART {
+				// Lookdot clobbers the opcode and type, undo that.
+				n.SetOp(op)
+				n.SetType(typ)
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 			}
 		}
 		return n

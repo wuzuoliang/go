@@ -15,7 +15,11 @@ import (
 //go:nosplit
 //go:cgo_unsafe_args
 func g0_pthread_key_create(k *pthreadkey, destructor uintptr) int32 {
+<<<<<<< HEAD
 	ret := asmcgocall(unsafe.Pointer(abi.FuncPCABI0(pthread_key_create_trampoline)), unsafe.Pointer(&k))
+=======
+	ret := asmcgocall(unsafe.Pointer(funcPC(pthread_key_create_trampoline)), unsafe.Pointer(&k))
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 	KeepAlive(k)
 	return ret
 }

@@ -7,7 +7,10 @@ package time_test
 import (
 	"errors"
 	"fmt"
+<<<<<<< HEAD
 	"internal/testenv"
+=======
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 	"math/rand"
 	"runtime"
 	"strings"

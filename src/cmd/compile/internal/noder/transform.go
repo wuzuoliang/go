@@ -587,11 +587,14 @@ func transformSelect(sel *ir.SelectStmt) {
 			n := ncase.Comm
 			oselrecv2 := func(dst, recv ir.Node, def bool) {
 				selrecv := ir.NewAssignListStmt(n.Pos(), ir.OSELRECV2, []ir.Node{dst, ir.BlankNode}, []ir.Node{recv})
+<<<<<<< HEAD
 				if dst.Op() == ir.ONAME && dst.(*ir.Name).Defn == n {
 					// Must fix Defn for dst, since we are
 					// completely changing the node.
 					dst.(*ir.Name).Defn = selrecv
 				}
+=======
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 				selrecv.Def = def
 				selrecv.SetTypecheck(1)
 				selrecv.SetInit(n.Init())

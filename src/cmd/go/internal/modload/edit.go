@@ -216,6 +216,7 @@ func raiseLimitsForUpgrades(ctx context.Context, maxVersion map[string]string, p
 	}
 
 	var (
+<<<<<<< HEAD
 		unprunedUpgrades []module.Version
 		isPrunedRootPath map[string]bool
 	)
@@ -231,6 +232,23 @@ func raiseLimitsForUpgrades(ctx context.Context, maxVersion map[string]string, p
 		}
 		for _, m := range mustSelect {
 			isPrunedRootPath[m.Path] = true
+=======
+		eagerUpgrades  []module.Version
+		isLazyRootPath map[string]bool
+	)
+	if depth == eager {
+		eagerUpgrades = tryUpgrade
+	} else {
+		isLazyRootPath = make(map[string]bool, len(maxVersion))
+		for p := range maxVersion {
+			isLazyRootPath[p] = true
+		}
+		for _, m := range tryUpgrade {
+			isLazyRootPath[m.Path] = true
+		}
+		for _, m := range mustSelect {
+			isLazyRootPath[m.Path] = true
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 		}
 
 		allowedRoot := map[module.Version]bool{}
@@ -242,10 +260,17 @@ func raiseLimitsForUpgrades(ctx context.Context, maxVersion map[string]string, p
 			}
 			allowedRoot[m] = true
 
+<<<<<<< HEAD
 			if MainModules.Contains(m.Path) {
 				// The main module versions are already considered to be higher than any
 				// possible m, so m cannot be selected as a root and there is no point
 				// scanning its dependencies.
+=======
+			if m.Path == Target.Path {
+				// Target is already considered to be higher than any possible m, so we
+				// won't be upgrading to it anyway and there is no point scanning its
+				// dependencies.
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 				return nil
 			}
 
@@ -259,11 +284,19 @@ func raiseLimitsForUpgrades(ctx context.Context, maxVersion map[string]string, p
 				// For efficiency, we'll load all of the unpruned upgrades as one big
 				// graph, rather than loading the (potentially-overlapping) subgraph for
 				// each upgrade individually.
+<<<<<<< HEAD
 				unprunedUpgrades = append(unprunedUpgrades, m)
 				return nil
 			}
 			for _, r := range summary.require {
 				if isPrunedRootPath[r.Path] {
+=======
+				eagerUpgrades = append(eagerUpgrades, m)
+				return nil
+			}
+			for _, r := range summary.require {
+				if isLazyRootPath[r.Path] {
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 					// r could become a root as the result of an upgrade or downgrade,
 					// in which case its dependencies will not be pruned out.
 					// We need to allow those dependencies to be upgraded too.
@@ -311,7 +344,11 @@ func raiseLimitsForUpgrades(ctx context.Context, maxVersion map[string]string, p
 	nextRoots := append([]module.Version(nil), mustSelect...)
 	for nextRoots != nil {
 		module.Sort(nextRoots)
+<<<<<<< HEAD
 		rs := newRequirements(pruning, nextRoots, nil)
+=======
+		rs := newRequirements(depth, nextRoots, nil)
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 		nextRoots = nil
 
 		rs, mustGraph, err := expandGraph(ctx, rs)
@@ -325,7 +362,11 @@ func raiseLimitsForUpgrades(ctx context.Context, maxVersion map[string]string, p
 			// which case we will error out either way).
 			allow(r)
 
+<<<<<<< HEAD
 			if isPrunedRootPath[r.Path] {
+=======
+			if isLazyRootPath[r.Path] {
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 				if v, ok := rs.rootSelected(r.Path); ok && r.Version == v {
 					// r is already a root, so its requirements are already included in
 					// the build list.

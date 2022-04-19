@@ -10,7 +10,134 @@ import (
 	"math/big"
 )
 
+<<<<<<< HEAD
 // p224Curve is a Curve implementation based on nistec.P224Point.
+=======
+var p224 p224Curve
+
+type p224Curve struct {
+	*CurveParams
+	gx, gy, b p224FieldElement
+}
+
+func initP224() {
+	// See FIPS 186-3, section D.2.2
+	p224.CurveParams = &CurveParams{Name: "P-224"}
+	p224.P, _ = new(big.Int).SetString("26959946667150639794667015087019630673557916260026308143510066298881", 10)
+	p224.N, _ = new(big.Int).SetString("26959946667150639794667015087019625940457807714424391721682722368061", 10)
+	p224.B, _ = new(big.Int).SetString("b4050a850c04b3abf54132565044b0b7d7bfd8ba270b39432355ffb4", 16)
+	p224.Gx, _ = new(big.Int).SetString("b70e0cbd6bb4bf7f321390b94a03c1d356c21122343280d6115c1d21", 16)
+	p224.Gy, _ = new(big.Int).SetString("bd376388b5f723fb4c22dfe6cd4375a05a07476444d5819985007e34", 16)
+	p224.BitSize = 224
+
+	p224FromBig(&p224.gx, p224.Gx)
+	p224FromBig(&p224.gy, p224.Gy)
+	p224FromBig(&p224.b, p224.B)
+}
+
+// P224 returns a Curve which implements P-224 (see FIPS 186-3, section D.2.2).
+//
+// The cryptographic operations are implemented using constant-time algorithms.
+func P224() Curve {
+	initonce.Do(initAll)
+	return p224
+}
+
+func (curve p224Curve) Params() *CurveParams {
+	return curve.CurveParams
+}
+
+func (curve p224Curve) IsOnCurve(bigX, bigY *big.Int) bool {
+	if bigX.Sign() < 0 || bigX.Cmp(curve.P) >= 0 ||
+		bigY.Sign() < 0 || bigY.Cmp(curve.P) >= 0 {
+		return false
+	}
+
+	var x, y p224FieldElement
+	p224FromBig(&x, bigX)
+	p224FromBig(&y, bigY)
+
+	// y² = x³ - 3x + b
+	var tmp p224LargeFieldElement
+	var x3 p224FieldElement
+	p224Square(&x3, &x, &tmp)
+	p224Mul(&x3, &x3, &x, &tmp)
+
+	for i := 0; i < 8; i++ {
+		x[i] *= 3
+	}
+	p224Sub(&x3, &x3, &x)
+	p224Reduce(&x3)
+	p224Add(&x3, &x3, &curve.b)
+	p224Contract(&x3, &x3)
+
+	p224Square(&y, &y, &tmp)
+	p224Contract(&y, &y)
+
+	for i := 0; i < 8; i++ {
+		if y[i] != x3[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (p224Curve) Add(bigX1, bigY1, bigX2, bigY2 *big.Int) (x, y *big.Int) {
+	var x1, y1, z1, x2, y2, z2, x3, y3, z3 p224FieldElement
+
+	p224FromBig(&x1, bigX1)
+	p224FromBig(&y1, bigY1)
+	if bigX1.Sign() != 0 || bigY1.Sign() != 0 {
+		z1[0] = 1
+	}
+	p224FromBig(&x2, bigX2)
+	p224FromBig(&y2, bigY2)
+	if bigX2.Sign() != 0 || bigY2.Sign() != 0 {
+		z2[0] = 1
+	}
+
+	p224AddJacobian(&x3, &y3, &z3, &x1, &y1, &z1, &x2, &y2, &z2)
+	return p224ToAffine(&x3, &y3, &z3)
+}
+
+func (p224Curve) Double(bigX1, bigY1 *big.Int) (x, y *big.Int) {
+	var x1, y1, z1, x2, y2, z2 p224FieldElement
+
+	p224FromBig(&x1, bigX1)
+	p224FromBig(&y1, bigY1)
+	z1[0] = 1
+
+	p224DoubleJacobian(&x2, &y2, &z2, &x1, &y1, &z1)
+	return p224ToAffine(&x2, &y2, &z2)
+}
+
+func (p224Curve) ScalarMult(bigX1, bigY1 *big.Int, scalar []byte) (x, y *big.Int) {
+	var x1, y1, z1, x2, y2, z2 p224FieldElement
+
+	p224FromBig(&x1, bigX1)
+	p224FromBig(&y1, bigY1)
+	z1[0] = 1
+
+	p224ScalarMult(&x2, &y2, &z2, &x1, &y1, &z1, scalar)
+	return p224ToAffine(&x2, &y2, &z2)
+}
+
+func (curve p224Curve) ScalarBaseMult(scalar []byte) (x, y *big.Int) {
+	var z1, x2, y2, z2 p224FieldElement
+
+	z1[0] = 1
+	p224ScalarMult(&x2, &y2, &z2, &curve.gx, &curve.gy, &z1, scalar)
+	return p224ToAffine(&x2, &y2, &z2)
+}
+
+// Field element functions.
+//
+// The field that we're dealing with is ℤ/pℤ where p = 2**224 - 2**96 + 1.
+//
+// Field elements are represented by a FieldElement, which is a typedef to an
+// array of 8 uint32's. The value of a FieldElement, a, is:
+//   a[0] + 2**28·a[1] + 2**56·a[1] + ... + 2**196·a[7]
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 //
 // It's a wrapper that exposes the big.Int-based Curve interface and encodes the
 // legacy idiosyncrasies it requires, such as invalid and infinity point

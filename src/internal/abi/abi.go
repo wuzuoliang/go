@@ -62,6 +62,7 @@ func (r *RegArgs) Dump() {
 	println()
 }
 
+<<<<<<< HEAD
 // IntRegArgAddr returns a pointer inside of r.Ints[reg] that is appropriately
 // offset for an argument of size argSize.
 //
@@ -82,6 +83,8 @@ func (r *RegArgs) IntRegArgAddr(reg int, argSize uintptr) unsafe.Pointer {
 	return unsafe.Pointer(uintptr(unsafe.Pointer(&r.Ints[reg])) + offset)
 }
 
+=======
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 // IntArgRegBitmap is a bitmap large enough to hold one bit per
 // integer argument/return register.
 type IntArgRegBitmap [(IntArgRegs + 7) / 8]uint8

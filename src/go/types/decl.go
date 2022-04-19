@@ -293,6 +293,33 @@ loop:
 		if nval == 0 && ndef > 0 {
 			return true
 		}
+<<<<<<< HEAD
+=======
+
+		switch t.info {
+		case unknown:
+			t.info = marked
+			t.info = check.validType(t.orig, append(path, t.obj)) // only types of current package added to path
+		case marked:
+			// cycle detected
+			for i, tn := range path {
+				if t.obj.pkg != check.pkg {
+					panic("internal error: type cycle via package-external type")
+				}
+				if tn == t.obj {
+					check.cycleError(path[i:])
+					t.info = invalid
+					t.underlying = Typ[Invalid]
+					return t.info
+				}
+			}
+			panic("internal error: cycle start not found")
+		}
+		return t.info
+
+	case *instance:
+		return check.validType(t.expand(), path)
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 	}
 
 	check.cycleError(cycle)

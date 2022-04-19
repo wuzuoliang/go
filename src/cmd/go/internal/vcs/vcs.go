@@ -5,7 +5,10 @@
 package vcs
 
 import (
+<<<<<<< HEAD
 	"bytes"
+=======
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 	"errors"
 	"fmt"
 	exec "internal/execabs"
