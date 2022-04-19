@@ -2375,7 +2375,10 @@ func http2parseHeadersFrame(_ *http2frameCache, fh http2FrameHeader, countError 
 		}
 	}
 	if len(p)-int(padLength) < 0 {
+<<<<<<< HEAD
 		countError("frame_headers_pad_too_big")
+=======
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 		return nil, http2streamError(fh.StreamID, http2ErrCodeProtocol)
 	}
 	hf.headerFragBuf = p[:len(p)-int(padLength)]
@@ -7507,6 +7510,7 @@ func (cc *http2ClientConn) ReserveNewRequest() bool {
 	return true
 }
 
+<<<<<<< HEAD
 // ClientConnState describes the state of a ClientConn.
 type http2ClientConnState struct {
 	// Closed is whether the connection is closed.
@@ -7562,6 +7566,8 @@ func (cc *http2ClientConn) State() http2ClientConnState {
 	}
 }
 
+=======
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 // clientConnIdleState describes the suitability of a client
 // connection to initiate a new RoundTrip request.
 type http2clientConnIdleState struct {
@@ -7731,9 +7737,12 @@ func (cc *http2ClientConn) Close() error {
 // closes the client connection immediately. In-flight requests are interrupted.
 func (cc *http2ClientConn) closeForLostPing() error {
 	err := errors.New("http2: client connection lost")
+<<<<<<< HEAD
 	if f := cc.t.CountError; f != nil {
 		f("conn_close_lost_ping")
 	}
+=======
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 	return cc.closeForError(err)
 }
 
@@ -7892,7 +7901,11 @@ func (cc *http2ClientConn) RoundTrip(req *Request) (*Response, error) {
 	}
 }
 
+<<<<<<< HEAD
 // doRequest runs for the duration of the request lifetime.
+=======
+// writeRequest runs for the duration of the request lifetime.
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 //
 // It sends the request and performs post-request cleanup (closing Request.Body, etc.).
 func (cs *http2clientStream) doRequest(req *Request) {
@@ -7963,6 +7976,7 @@ func (cs *http2clientStream) writeRequest(req *Request) (err error) {
 		// auto-decoding a portion of a gzipped document will just fail
 		// anyway. See https://golang.org/issue/8923
 		cs.requestedGzip = true
+<<<<<<< HEAD
 	}
 
 	continueTimeout := cc.t.expectContinueTimeout()
@@ -8139,6 +8153,93 @@ func (cs *http2clientStream) cleanupWriteRequest(err error) {
 			} else {
 				cc.writeStreamReset(cs.ID, http2ErrCodeCancel, err)
 			}
+=======
+	}
+
+	continueTimeout := cc.t.expectContinueTimeout()
+	if continueTimeout != 0 {
+		if !httpguts.HeaderValuesContainsToken(req.Header["Expect"], "100-continue") {
+			continueTimeout = 0
+		} else {
+			cs.on100 = make(chan struct{}, 1)
+		}
+	}
+
+	// Past this point (where we send request headers), it is possible for
+	// RoundTrip to return successfully. Since the RoundTrip contract permits
+	// the caller to "mutate or reuse" the Request after closing the Response's Body,
+	// we must take care when referencing the Request from here on.
+	err = cs.encodeAndWriteHeaders(req)
+	<-cc.reqHeaderMu
+	if err != nil {
+		return err
+	}
+
+	hasBody := cs.reqBodyContentLength != 0
+	if !hasBody {
+		cs.sentEndStream = true
+	} else {
+		if continueTimeout != 0 {
+			http2traceWait100Continue(cs.trace)
+			timer := time.NewTimer(continueTimeout)
+			select {
+			case <-timer.C:
+				err = nil
+			case <-cs.on100:
+				err = nil
+			case <-cs.abort:
+				err = cs.abortErr
+			case <-ctx.Done():
+				err = ctx.Err()
+			case <-cs.reqCancel:
+				err = http2errRequestCanceled
+			}
+			timer.Stop()
+			if err != nil {
+				http2traceWroteRequest(cs.trace, err)
+				return err
+			}
+		}
+
+		if err = cs.writeRequestBody(req); err != nil {
+			if err != http2errStopReqBodyWrite {
+				http2traceWroteRequest(cs.trace, err)
+				return err
+			}
+		} else {
+			cs.sentEndStream = true
+		}
+	}
+
+	http2traceWroteRequest(cs.trace, err)
+
+	var respHeaderTimer <-chan time.Time
+	var respHeaderRecv chan struct{}
+	if d := cc.responseHeaderTimeout(); d != 0 {
+		timer := time.NewTimer(d)
+		defer timer.Stop()
+		respHeaderTimer = timer.C
+		respHeaderRecv = cs.respHeaderRecv
+	}
+	// Wait until the peer half-closes its end of the stream,
+	// or until the request is aborted (via context, error, or otherwise),
+	// whichever comes first.
+	for {
+		select {
+		case <-cs.peerClosed:
+			return nil
+		case <-respHeaderTimer:
+			return http2errTimeout
+		case <-respHeaderRecv:
+			respHeaderRecv = nil
+			respHeaderTimer = nil // keep waiting for END_STREAM
+		case <-cs.abort:
+			return cs.abortErr
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-cs.reqCancel:
+			return http2errRequestCanceled
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 		}
 		cs.bufPipe.CloseWithError(err) // no-op if already closed
 	} else {
@@ -8161,6 +8262,118 @@ func (cs *http2clientStream) cleanupWriteRequest(err error) {
 	close(cs.donec)
 }
 
+<<<<<<< HEAD
+=======
+func (cs *http2clientStream) encodeAndWriteHeaders(req *Request) error {
+	cc := cs.cc
+	ctx := cs.ctx
+
+	cc.wmu.Lock()
+	defer cc.wmu.Unlock()
+
+	// If the request was canceled while waiting for cc.mu, just quit.
+	select {
+	case <-cs.abort:
+		return cs.abortErr
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-cs.reqCancel:
+		return http2errRequestCanceled
+	default:
+	}
+
+	// Encode headers.
+	//
+	// we send: HEADERS{1}, CONTINUATION{0,} + DATA{0,} (DATA is
+	// sent by writeRequestBody below, along with any Trailers,
+	// again in form HEADERS{1}, CONTINUATION{0,})
+	trailers, err := http2commaSeparatedTrailers(req)
+	if err != nil {
+		return err
+	}
+	hasTrailers := trailers != ""
+	contentLen := http2actualContentLength(req)
+	hasBody := contentLen != 0
+	hdrs, err := cc.encodeHeaders(req, cs.requestedGzip, trailers, contentLen)
+	if err != nil {
+		return err
+	}
+
+	// Write the request.
+	endStream := !hasBody && !hasTrailers
+	cs.sentHeaders = true
+	err = cc.writeHeaders(cs.ID, endStream, int(cc.maxFrameSize), hdrs)
+	http2traceWroteHeaders(cs.trace)
+	return err
+}
+
+// cleanupWriteRequest performs post-request tasks.
+//
+// If err (the result of writeRequest) is non-nil and the stream is not closed,
+// cleanupWriteRequest will send a reset to the peer.
+func (cs *http2clientStream) cleanupWriteRequest(err error) {
+	cc := cs.cc
+
+	if cs.ID == 0 {
+		// We were canceled before creating the stream, so return our reservation.
+		cc.decrStreamReservations()
+	}
+
+	// TODO: write h12Compare test showing whether
+	// Request.Body is closed by the Transport,
+	// and in multiple cases: server replies <=299 and >299
+	// while still writing request body
+	cc.mu.Lock()
+	bodyClosed := cs.reqBodyClosed
+	cs.reqBodyClosed = true
+	cc.mu.Unlock()
+	if !bodyClosed && cs.reqBody != nil {
+		cs.reqBody.Close()
+	}
+
+	if err != nil && cs.sentEndStream {
+		// If the connection is closed immediately after the response is read,
+		// we may be aborted before finishing up here. If the stream was closed
+		// cleanly on both sides, there is no error.
+		select {
+		case <-cs.peerClosed:
+			err = nil
+		default:
+		}
+	}
+	if err != nil {
+		cs.abortStream(err) // possibly redundant, but harmless
+		if cs.sentHeaders {
+			if se, ok := err.(http2StreamError); ok {
+				if se.Cause != http2errFromPeer {
+					cc.writeStreamReset(cs.ID, se.Code, err)
+				}
+			} else {
+				cc.writeStreamReset(cs.ID, http2ErrCodeCancel, err)
+			}
+		}
+		cs.bufPipe.CloseWithError(err) // no-op if already closed
+	} else {
+		if cs.sentHeaders && !cs.sentEndStream {
+			cc.writeStreamReset(cs.ID, http2ErrCodeNo, nil)
+		}
+		cs.bufPipe.CloseWithError(http2errRequestCanceled)
+	}
+	if cs.ID != 0 {
+		cc.forgetStreamID(cs.ID)
+	}
+
+	cc.wmu.Lock()
+	werr := cc.werr
+	cc.wmu.Unlock()
+	if werr != nil {
+		cc.Close()
+	}
+
+	close(cs.donec)
+}
+
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 // awaitOpenSlotForStream waits until len(streams) < maxConcurrentStreams.
 // Must hold cc.mu.
 func (cc *http2ClientConn) awaitOpenSlotForStreamLocked(cs *http2clientStream) error {
@@ -8294,6 +8507,7 @@ func (cs *http2clientStream) writeRequestBody(req *Request) (err error) {
 				return err
 			}
 		}
+<<<<<<< HEAD
 		if err != nil {
 			cc.mu.Lock()
 			bodyClosed := cs.reqBodyClosed
@@ -8307,6 +8521,13 @@ func (cs *http2clientStream) writeRequestBody(req *Request) (err error) {
 			default:
 				return err
 			}
+=======
+		if err == io.EOF {
+			sawEOF = true
+			err = nil
+		} else if err != nil {
+			return err
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 		}
 
 		remain := buf[:n]
@@ -9183,10 +9404,14 @@ func (b http2transportResponseBody) Close() error {
 	select {
 	case <-cs.donec:
 	case <-cs.ctx.Done():
+<<<<<<< HEAD
 		// See golang/go#49366: The net/http package can cancel the
 		// request context after the response body is fully read.
 		// Don't treat this as an error.
 		return nil
+=======
+		return cs.ctx.Err()
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 	case <-cs.reqCancel:
 		return http2errRequestCanceled
 	}
@@ -9310,12 +9535,15 @@ func (rl *http2clientConnReadLoop) endStream(cs *http2clientStream) {
 	// server.go's (*stream).endStream method.
 	if !cs.readClosed {
 		cs.readClosed = true
+<<<<<<< HEAD
 		// Close cs.bufPipe and cs.peerClosed with cc.mu held to avoid a
 		// race condition: The caller can read io.EOF from Response.Body
 		// and close the body before we close cs.peerClosed, causing
 		// cleanupWriteRequest to send a RST_STREAM.
 		rl.cc.mu.Lock()
 		defer rl.cc.mu.Unlock()
+=======
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 		cs.bufPipe.closeWithErrorAndCode(io.EOF, cs.copyTrailers)
 		close(cs.peerClosed)
 	}
@@ -9476,9 +9704,12 @@ func (rl *http2clientConnReadLoop) processResetStream(f *http2RSTStreamFrame) er
 	if f.ErrCode == http2ErrCodeProtocol {
 		rl.cc.SetDoNotReuse()
 	}
+<<<<<<< HEAD
 	if fn := cs.cc.t.CountError; fn != nil {
 		fn("recv_rststream_" + f.ErrCode.stringToken())
 	}
+=======
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 	cs.abortStream(serr)
 
 	cs.bufPipe.CloseWithError(serr)

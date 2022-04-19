@@ -9,6 +9,7 @@ import (
 	"internal/goos"
 	"math/rand"
 	. "runtime"
+	"runtime/internal/sys"
 	"testing"
 )
 
@@ -411,7 +412,11 @@ func TestPageAllocScavenge(t *testing.T) {
 	}
 	// Disable these tests on iOS since we have a small address space.
 	// See #46860.
+<<<<<<< HEAD
 	if PageAlloc64Bit != 0 && goos.IsIos == 0 {
+=======
+	if PageAlloc64Bit != 0 && sys.GoosIos == 0 {
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 		tests["ScavAllVeryDiscontiguous"] = setup{
 			beforeAlloc: map[ChunkIdx][]BitRange{
 				BaseChunkIdx:          {},

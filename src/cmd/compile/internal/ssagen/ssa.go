@@ -2446,6 +2446,7 @@ func (s *state) conv(n ir.Node, v *ssa.Value, ft, tt *types.Type) *ssa.Value {
 		return s.newValue1(op, tt, v)
 	}
 
+<<<<<<< HEAD
 	if ft.IsComplex() && tt.IsComplex() {
 		var op ssa.Op
 		if ft.Size() == tt.Size() {
@@ -2478,6 +2479,8 @@ func (s *state) conv(n ir.Node, v *ssa.Value, ft, tt *types.Type) *ssa.Value {
 		return s.newValue2(ssa.OpComplexMake, tt, v, s.zeroVal(et))
 	}
 
+=======
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 	if ft.IsFloat() || tt.IsFloat() {
 		conv, ok := fpConvOpToSSA[twoTypes{s.concreteEtype(ft), s.concreteEtype(tt)}]
 		if s.config.RegSize == 4 && Arch.LinkArch.Family != sys.MIPS && !s.softFloat {
@@ -2551,6 +2554,34 @@ func (s *state) conv(n ir.Node, v *ssa.Value, ft, tt *types.Type) *ssa.Value {
 		return nil
 	}
 
+<<<<<<< HEAD
+=======
+	if ft.IsComplex() && tt.IsComplex() {
+		var op ssa.Op
+		if ft.Size() == tt.Size() {
+			switch ft.Size() {
+			case 8:
+				op = ssa.OpRound32F
+			case 16:
+				op = ssa.OpRound64F
+			default:
+				s.Fatalf("weird complex conversion %v -> %v", ft, tt)
+			}
+		} else if ft.Size() == 8 && tt.Size() == 16 {
+			op = ssa.OpCvt32Fto64F
+		} else if ft.Size() == 16 && tt.Size() == 8 {
+			op = ssa.OpCvt64Fto32F
+		} else {
+			s.Fatalf("weird complex conversion %v -> %v", ft, tt)
+		}
+		ftp := types.FloatForComplex(ft)
+		ttp := types.FloatForComplex(tt)
+		return s.newValue2(ssa.OpComplexMake, tt,
+			s.newValueOrSfCall1(op, ttp, s.newValue1(ssa.OpComplexReal, ftp, v)),
+			s.newValueOrSfCall1(op, ttp, s.newValue1(ssa.OpComplexImag, ftp, v)))
+	}
+
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 	s.Fatalf("unhandled OCONV %s -> %s", ft.Kind(), tt.Kind())
 	return nil
 }

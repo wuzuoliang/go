@@ -1873,8 +1873,12 @@ func TestTimeVDSO(t *testing.T) {
 		testenv.SkipFlaky(t, 48655)
 	}
 
+<<<<<<< HEAD
 	matches := matchAndAvoidStacks(stackContains, []string{"time.now"}, avoidFunctions())
 	p := testCPUProfile(t, matches, func(dur time.Duration) {
+=======
+	p := testCPUProfile(t, stackContains, []string{"time.now"}, avoidFunctions(), func(dur time.Duration) {
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 		t0 := time.Now()
 		for {
 			t := time.Now()

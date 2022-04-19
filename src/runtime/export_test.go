@@ -1056,7 +1056,11 @@ var BaseChunkIdx = func() ChunkIdx {
 		prefix = 0x100
 	}
 	baseAddr := prefix * pallocChunkBytes
+<<<<<<< HEAD
 	if goos.IsAix != 0 {
+=======
+	if sys.GoosAix != 0 {
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 		baseAddr += arenaBaseOffset
 	}
 	return ChunkIdx(chunkIndex(baseAddr))

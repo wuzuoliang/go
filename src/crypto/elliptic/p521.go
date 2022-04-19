@@ -55,6 +55,7 @@ func (curve p521Curve) Params() *CurveParams {
 }
 
 func (curve p521Curve) IsOnCurve(x, y *big.Int) bool {
+<<<<<<< HEAD
 	// IsOnCurve is documented to reject (0, 0), the conventional point at
 	// infinity, which however is accepted by p521PointFromAffine.
 	if x.Sign() == 0 && y.Sign() == 0 {
@@ -62,6 +63,35 @@ func (curve p521Curve) IsOnCurve(x, y *big.Int) bool {
 	}
 	_, ok := p521PointFromAffine(x, y)
 	return ok
+=======
+	if x.Sign() < 0 || x.Cmp(curve.P) >= 0 ||
+		y.Sign() < 0 || y.Cmp(curve.P) >= 0 {
+		return false
+	}
+
+	x1 := bigIntToFiatP521(x)
+	y1 := bigIntToFiatP521(y)
+	b := bigIntToFiatP521(curve.B) // TODO: precompute this value.
+
+	// x³ - 3x + b.
+	x3 := new(fiat.P521Element).Square(x1)
+	x3.Mul(x3, x1)
+
+	threeX := new(fiat.P521Element).Add(x1, x1)
+	threeX.Add(threeX, x1)
+
+	x3.Sub(x3, threeX)
+	x3.Add(x3, b)
+
+	// y² = x³ - 3x + b
+	y2 := new(fiat.P521Element).Square(y1)
+
+	return x3.Equal(y2) == 1
+}
+
+type p521Point struct {
+	x, y, z *fiat.P521Element
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 }
 
 func p521PointFromAffine(x, y *big.Int) (p *nistec.P521Point, ok bool) {

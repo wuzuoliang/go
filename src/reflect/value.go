@@ -515,7 +515,11 @@ func (v Value) call(op string, in []Value) []Value {
 						// this to be the last reference to v.ptr.
 						regArgs.Ptrs[st.ireg] = *(*unsafe.Pointer)(offset)
 					}
+<<<<<<< HEAD
 					intToReg(&regArgs, st.ireg, st.size, offset)
+=======
+					memmove(unsafe.Pointer(&regArgs.Ints[st.ireg]), offset, st.size)
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 				} else {
 					if st.kind == abiStepPointer {
 						// See the comment in abiStepPointer case above.

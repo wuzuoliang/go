@@ -3,6 +3,10 @@
 // license that can be found in the LICENSE file.
 
 //go:build amd64 || arm64 || mips64 || mips64le || ppc64 || ppc64le || riscv64 || s390x
+<<<<<<< HEAD
+=======
+// +build amd64 arm64 mips64 mips64le ppc64 ppc64le riscv64 s390x
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 
 package runtime
 

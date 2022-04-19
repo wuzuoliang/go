@@ -215,7 +215,11 @@ const (
 	// to a 48-bit address space like every other arm64 platform.
 	//
 	// WebAssembly currently has a limit of 4GB linear memory.
+<<<<<<< HEAD
 	heapAddrBits = (_64bit*(1-goarch.IsWasm)*(1-goos.IsIos*goarch.IsArm64))*48 + (1-_64bit+goarch.IsWasm)*(32-(goarch.IsMips+goarch.IsMipsle)) + 40*goos.IsIos*goarch.IsArm64
+=======
+	heapAddrBits = (_64bit*(1-sys.GoarchWasm)*(1-sys.GoosIos*sys.GoarchArm64))*48 + (1-_64bit+sys.GoarchWasm)*(32-(sys.GoarchMips+sys.GoarchMipsle)) + 40*sys.GoosIos*sys.GoarchArm64
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 
 	// maxAlloc is the maximum size of an allocation. On 64-bit,
 	// it's theoretically possible to allocate 1<<heapAddrBits bytes. On

@@ -139,6 +139,37 @@ func utimes(path string, tv *[2]Timeval) (err error) {
 	return utimensat(_AT_FDCWD, path, (*[2]Timespec)(unsafe.Pointer(&ts[0])), 0)
 }
 
+<<<<<<< HEAD
+=======
+func Pipe(p []int) (err error) {
+	if len(p) != 2 {
+		return EINVAL
+	}
+	var pp [2]_C_int
+	err = pipe2(&pp, 0)
+	if err == nil {
+		p[0] = int(pp[0])
+		p[1] = int(pp[1])
+	}
+	return
+}
+
+//sysnb pipe2(p *[2]_C_int, flags int) (err error)
+
+func Pipe2(p []int, flags int) (err error) {
+	if len(p) != 2 {
+		return EINVAL
+	}
+	var pp [2]_C_int
+	err = pipe2(&pp, flags)
+	if err == nil {
+		p[0] = int(pp[0])
+		p[1] = int(pp[1])
+	}
+	return
+}
+
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 // Getrlimit prefers the prlimit64 system call. See issue 38604.
 func Getrlimit(resource int, rlim *Rlimit) error {
 	err := prlimit(0, resource, nil, rlim)

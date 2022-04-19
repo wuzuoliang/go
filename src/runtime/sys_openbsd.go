@@ -17,7 +17,11 @@ import (
 //go:nosplit
 //go:cgo_unsafe_args
 func pthread_attr_init(attr *pthreadattr) int32 {
+<<<<<<< HEAD
 	ret := libcCall(unsafe.Pointer(abi.FuncPCABI0(pthread_attr_init_trampoline)), unsafe.Pointer(&attr))
+=======
+	ret := libcCall(unsafe.Pointer(funcPC(pthread_attr_init_trampoline)), unsafe.Pointer(&attr))
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 	KeepAlive(attr)
 	return ret
 }
@@ -26,7 +30,11 @@ func pthread_attr_init_trampoline()
 //go:nosplit
 //go:cgo_unsafe_args
 func pthread_attr_destroy(attr *pthreadattr) int32 {
+<<<<<<< HEAD
 	ret := libcCall(unsafe.Pointer(abi.FuncPCABI0(pthread_attr_destroy_trampoline)), unsafe.Pointer(&attr))
+=======
+	ret := libcCall(unsafe.Pointer(funcPC(pthread_attr_destroy_trampoline)), unsafe.Pointer(&attr))
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 	KeepAlive(attr)
 	return ret
 }
@@ -35,7 +43,11 @@ func pthread_attr_destroy_trampoline()
 //go:nosplit
 //go:cgo_unsafe_args
 func pthread_attr_getstacksize(attr *pthreadattr, size *uintptr) int32 {
+<<<<<<< HEAD
 	ret := libcCall(unsafe.Pointer(abi.FuncPCABI0(pthread_attr_getstacksize_trampoline)), unsafe.Pointer(&attr))
+=======
+	ret := libcCall(unsafe.Pointer(funcPC(pthread_attr_getstacksize_trampoline)), unsafe.Pointer(&attr))
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 	KeepAlive(attr)
 	KeepAlive(size)
 	return ret
@@ -45,7 +57,11 @@ func pthread_attr_getstacksize_trampoline()
 //go:nosplit
 //go:cgo_unsafe_args
 func pthread_attr_setdetachstate(attr *pthreadattr, state int) int32 {
+<<<<<<< HEAD
 	ret := libcCall(unsafe.Pointer(abi.FuncPCABI0(pthread_attr_setdetachstate_trampoline)), unsafe.Pointer(&attr))
+=======
+	ret := libcCall(unsafe.Pointer(funcPC(pthread_attr_setdetachstate_trampoline)), unsafe.Pointer(&attr))
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 	KeepAlive(attr)
 	return ret
 }
@@ -54,7 +70,11 @@ func pthread_attr_setdetachstate_trampoline()
 //go:nosplit
 //go:cgo_unsafe_args
 func pthread_create(attr *pthreadattr, start uintptr, arg unsafe.Pointer) int32 {
+<<<<<<< HEAD
 	ret := libcCall(unsafe.Pointer(abi.FuncPCABI0(pthread_create_trampoline)), unsafe.Pointer(&attr))
+=======
+	ret := libcCall(unsafe.Pointer(funcPC(pthread_create_trampoline)), unsafe.Pointer(&attr))
+>>>>>>> 346b18ee9d15410ab08dd583787c64dbed0666d2
 	KeepAlive(attr)
 	KeepAlive(arg) // Just for consistency. Arg of course needs to be kept alive for the start function.
 	return ret
